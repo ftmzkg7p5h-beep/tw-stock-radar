@@ -1,14 +1,8 @@
-# 台股雷達 PRO V2
+# 台股雷達 PRO - final
 
-功能：
-- 🚀 自動選股：從成交金額候選池掃描，不必先輸入股票
-- 🕯️ K線自動辨識：單K、雙K、三K、均線、突破、量能
-- 📊 技術指標：MA、RSI、MACD、布林通道、量能
-- 🏦 法人：外資、投信、自營商、三大法人買賣超與歷史
-- 💰 營收：當月、YoY、MoM、累計
-- 📑 財報：使用 yfinance 可取得的公開財務報表
-- 🧠 規則化雷達：可研究 / 再等等 / 偏弱
-- 🕯️ 參考圖庫：可將使用者提供的K線圖放在 assets/patterns/
-
-## Streamlit
-Main file: `app.py`
+1. Streamlit Main file path 設為 `app.py`
+2. 將整個資料夾內容放入 GitHub 專案根目錄
+3. `daily-radar.yml` 放在 `.github/workflows/`
+4. 首頁不自動掃描大量股票；輸入股票後才分析
+5. 法人歷史改為並行取得，避免逐檔重複 API
+6. `kline_engine.py` 已補上 `PATTERN_DESCRIPTIONS`

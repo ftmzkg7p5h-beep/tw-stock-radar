@@ -1,1019 +1,549 @@
 import re
-import json
-import math
-from datetime import datetime, timedelta
-from pathlib import Path
-
-import numpy as np
-import pandas as pd
-import requests
+from concurrent.futures import ThreadPoolExecutor, as_completed
 import streamlit as st
+import pandas as pd
+import numpy as np
+import requests
+import yfinance as yf
+from datetime import datetime, timedelta
 
-try:
-    import yfinance as yf
-except Exception:
-    yf = None
+st.set_page_config(page_title="台股法人 × 財報 × 技術雷達", page_icon="📈", layout="wide")
 
-st.set_page_config(page_title='台股雷達 PRO', page_icon='📈', layout='wide')
+st.title("📈 台股法人 × 財報 × 技術雷達")
+st.caption("法人籌碼 × 營收 × 技術面 × K線型態｜資料抓不到時明確顯示，不把未知當 0")
 
-BASE = Path(__file__).resolve().parent
-CACHE_FILE = BASE / 'radar_cache.json'
-UA = {'User-Agent': 'Mozilla/5.0'}
+HEADERS = {"User-Agent": "Mozilla/5.0 (iPad; CPU OS 17_0 like Mac OS X) AppleWebKit/605.1.15 Safari/605.1.15"}
 
-def http_json(url, params=None, timeout=15):
+def num(v):
     try:
-        r = requests.get(url, params=params, headers=UA, timeout=timeout)
+        s = str(v).replace(",", "").replace("%", "").strip()
+        if s in ("", "-", "--", "—", "nan", "None"): return np.nan
+        return float(s)
+    except: return np.nan
+
+@st.cache_data(ttl=1800)
+def get_json(url, params=None, timeout=5):
+    try:
+        r = requests.get(url, params=params, headers=HEADERS, timeout=timeout)
         r.raise_for_status()
         return r.json()
-    except Exception:
+    except:
         return None
 
-def num(x):
-    if x is None or x == '' or x == '--':
-        return np.nan
-    try:
-        return float(str(x).replace(',', '').replace(' ', '').replace('%', ''))
-    except Exception:
-        return np.nan
-
-def lots(x):
-    return np.nan if pd.isna(x) else x / 1000
-
-def fmt(x, digits=1):
-    if x is None or pd.isna(x):
-        return '—'
-    return f'{x:,.{digits}f}'
-
-def roc_to_ad(s):
-    s = str(s).strip()
-    m = re.search(r'(\d{2,3})[/-](\d{1,2})[/-](\d{1,2})', s)
-    if not m:
-        return s
-    y, mo, d = map(int, m.groups())
-    if y < 1911:
-        y += 1911
-    return f'{y:04d}/{mo:02d}/{d:02d}'
-
-def latest_business_dates(days=12):
-    today = datetime.now()
-    return [(today - timedelta(days=i)).strftime('%Y%m%d') for i in range(days)]
-
+# ---------- 股票清單 ----------
 @st.cache_data(ttl=3600, show_spinner=False)
-def stock_universe():
-    rows = []
-    for endpoint in ['STOCK_DAY_ALL', 'ETF_DAY_ALL']:
-        data = http_json(f'https://openapi.twse.com.tw/v1/exchangeReport/{endpoint}')
-        if isinstance(data, list):
-            rows.extend(data)
-
-    out = []
-    for r in rows:
-        code = str(r.get('Code', r.get('股票代號', ''))).strip()
-        name = str(r.get('Name') or r.get('股票名稱') or '').strip()
-        if not re.fullmatch(r'\d{4,6}', code):
-            continue
-        close = num(r.get('ClosingPrice', r.get('收盤價')))
-        change = num(r.get('Change', r.get('漲跌價差')))
-        vol = num(r.get('TradeVolume', r.get('成交股數')))
-        turnover = num(r.get('TradeValue', r.get('成交金額')))
-        out.append({'code': code, 'name': name, 'close': close, 'change': change,
-                    'volume': vol, 'turnover': turnover})
-
-    fallback_names = {
-        '1101':'台泥','1102':'亞泥','1216':'統一','1301':'台塑','1303':'南亞',
-        '2002':'中鋼','2207':'和泰車','2303':'聯電','2308':'台達電','2313':'華通',
-        '2317':'鴻海','2327':'國巨','2330':'台積電','2344':'華邦電','2357':'華碩',
-        '2379':'瑞昱','2382':'廣達','2395':'研華','2408':'南亞科','2454':'聯發科',
-        '2603':'長榮','2609':'陽明','2615':'萬海','2881':'富邦金','2882':'國泰金',
-        '2883':'開發金','2884':'玉山金','2886':'兆豐金','2887':'台新新光金',
-        '2890':'永豐金','2891':'中信金','2892':'第一金','3008':'大立光',
-        '3034':'聯詠','3037':'欣興','3045':'台灣大','3231':'緯創','3443':'創意',
-        '3711':'日月光投控','4904':'遠傳','4938':'和碩','5347':'世界',
-        '5871':'中租-KY','5880':'合庫金','6239':'力成','6669':'緯穎',
-        '8046':'南電','8454':'富邦媒','9904':'寶成'
+def get_twse_list():
+    fallback = {
+        "1101":"台泥","1102":"亞泥","1216":"統一","1301":"台塑","1303":"南亞",
+        "2002":"中鋼","2207":"和泰車","2303":"聯電","2308":"台達電","2317":"鴻海",
+        "2330":"台積電","2344":"華邦電","2357":"華碩","2379":"瑞昱","2382":"廣達",
+        "2454":"聯發科","2603":"長榮","2609":"陽明","2615":"萬海","2881":"富邦金",
+        "2882":"國泰金","2884":"玉山金","2886":"兆豐金","2891":"中信金",
+        "3008":"大立光","3034":"聯詠","3037":"欣興","3231":"緯創","3443":"創意",
+        "3711":"日月光投控","4938":"和碩","6669":"緯穎","8046":"南電","9904":"寶成"
     }
+    data = get_json("https://openapi.twse.com.tw/v1/exchangeReport/STOCK_DAY_ALL", timeout=6)
+    rows=[]
+    if isinstance(data, list):
+        for x in data:
+            c=str(x.get("Code","")).strip(); n=str(x.get("Name","")).strip()
+            if c.isdigit() and n: rows.append({"代號":c,"名稱":n})
+    if rows:
+        return pd.DataFrame(rows).drop_duplicates("代號")
+    return pd.DataFrame([{"代號":c,"名稱":n} for c,n in fallback.items()])
 
-    if out:
-        df = pd.DataFrame(out).drop_duplicates('code')
-        df['name'] = df.apply(
-            lambda r: r['name'] if r['name'] else fallback_names.get(r['code'], r['code']),
-            axis=1
-        )
-        return df
-
-    return pd.DataFrame([
-        {'code': c, 'name': n, 'close': np.nan, 'change': np.nan,
-         'volume': np.nan, 'turnover': np.nan}
-        for c, n in fallback_names.items()
-    ])
-
-T86_ALIASES = {
-    'foreign_net': ['外陸資買賣超股數(不含外資自營商)', '外陸資買賣超股數'],
-    'trust_net': ['投信買賣超股數'],
-    'dealer_net': ['自營商買賣超股數'],
-    'all_net': ['三大法人買賣超股數'],
-}
-
-def _norm_field(x):
-    return re.sub(r'[\s_（）()]', '', str(x)).replace('－','-').replace('—','-')
-
-def _find_field(fields, aliases):
-    norm = {_norm_field(f): f for f in fields}
-    for alias in aliases:
-        a = _norm_field(alias)
-        for k, original in norm.items():
-            if k == a:
-                return fields.index(original)
-    return None
-
-def parse_t86_table(j):
-    if not isinstance(j, dict) or not j.get('data') or not j.get('fields'):
-        return {}
-    fields = list(j.get('fields') or [])
-    fi = {name: _find_field(fields, aliases) for name, aliases in T86_ALIASES.items()}
-    if fi['foreign_net'] is None or fi['trust_net'] is None or fi['dealer_net'] is None:
-        return {}
-
-    code_idx = _find_field(fields, ['證券代號'])
-    if code_idx is None:
-        code_idx = 0
-
-    all_idx = _find_field(fields, T86_ALIASES['all_net'])
-    out = {}
-
-    for row in j['data']:
-        if not row:
-            continue
-        max_idx = max(code_idx, fi['foreign_net'], fi['trust_net'], fi['dealer_net'])
-        if len(row) <= max_idx:
-            continue
-
-        code = str(row[code_idx]).strip()
-        if not re.fullmatch(r'\d{4,6}', code):
-            continue
-
-        foreign = num(row[fi['foreign_net']])
-        trust = num(row[fi['trust_net']])
-        dealer = num(row[fi['dealer_net']])
-
-        if pd.isna(foreign) and pd.isna(trust) and pd.isna(dealer):
-            continue
-
-        total = np.nansum([foreign, trust, dealer])
-
-        if all_idx is not None and all_idx < len(row):
-            all_net = num(row[all_idx])
-            if not pd.isna(all_net) and abs(all_net - total) > 1:
-                continue
-
-        out[code] = {
-            'foreign': foreign,
-            'trust': trust,
-            'dealer': dealer,
-            'total': total
-        }
-
+# ---------- 法人：TWT38U + T86 fallback ----------
+def parse_twt38(data):
+    if not isinstance(data,list) or not data: return {}
+    fields=list(data[0].keys())
+    def find(keys):
+        for k in keys:
+            if k in fields: return k
+        for f in fields:
+            if any(k in str(f) for k in keys): return f
+        return None
+    cf=find(["證券代號"])
+    ff=find(["外陸資買賣超股數(不含外資自營商)","外資買賣超股數"])
+    tf=find(["投信買賣超股數"])
+    df=find(["自營商買賣超股數(自行買賣)","自營商買賣超股數"])
+    out={}
+    if not cf: return out
+    for x in data:
+        c=str(x.get(cf,"")).strip()
+        if not c: continue
+        f=num(x.get(ff)) if ff else np.nan
+        t=num(x.get(tf)) if tf else np.nan
+        d=num(x.get(df)) if df else np.nan
+        vals=[f,t,d]
+        total=sum(v for v in vals if pd.notna(v)) if any(pd.notna(v) for v in vals) else np.nan
+        out[c]={"外資":f,"投信":t,"自營商":d,"法人合計":total}
     return out
 
+def parse_t86(data):
+    # T86 JSON: {"data":[...],"fields":[...]}
+    if not isinstance(data,dict): return {}
+    fields=data.get("fields",[])
+    rows=data.get("data",[])
+    if not fields or not rows: return {}
+    def fi(keys):
+        for k in keys:
+            if k in fields: return fields.index(k)
+        for i,f in enumerate(fields):
+            if any(k in str(f) for k in keys): return i
+        return None
+    ci=fi(["證券代號"])
+    # T86 typically has foreign buy/sell, trust, dealer columns; use column names rather than position.
+    fbuy=fi(["外陸資買賣超股數(不含外資自營商)","外陸資買賣超股數"])
+    t=fi(["投信買賣超股數"])
+    d=fi(["自營商買賣超股數"])
+    out={}
+    if ci is None: return out
+    for row in rows:
+        if len(row)<=ci: continue
+        c=str(row[ci]).strip()
+        if not c: continue
+        f=num(row[fbuy]) if fbuy is not None and len(row)>fbuy else np.nan
+        tv=num(row[t]) if t is not None and len(row)>t else np.nan
+        dv=num(row[d]) if d is not None and len(row)>d else np.nan
+        vals=[f,tv,dv]
+        total=sum(v for v in vals if pd.notna(v)) if any(pd.notna(v) for v in vals) else np.nan
+        out[c]={"外資":f,"投信":tv,"自營商":dv,"法人合計":total}
+    return out
+
+@st.cache_data(ttl=1800)
+def institutional_latest():
+    data=get_json("https://openapi.twse.com.tw/v1/exchangeReport/TWT38U")
+    out=parse_twt38(data)
+    if out: return out, "TWSE OpenAPI TWT38U"
+    # Find latest available trading date, looking back 10 calendar days.
+    for i in range(4):
+        d=(datetime.now()-timedelta(days=i)).strftime("%Y%m%d")
+        data=get_json("https://www.twse.com.tw/rwd/zh/fund/T86",
+                      {"date":d,"selectType":"ALLBUT0999","response":"json"}, timeout=6)
+        out=parse_t86(data)
+        if out: return out, f"TWSE T86 {d}"
+    return {}, "未取得"
+
 @st.cache_data(ttl=900, show_spinner=False)
-def institutional_history(code, lookback=25):
-    frames = []
-    for d in latest_business_dates(lookback + 10):
-        j = http_json(
-            'https://www.twse.com.tw/rwd/zh/fund/T86',
-            params={'date': d, 'selectType': 'ALLBUT0999', 'response': 'json'},
-            timeout=12
-        )
-        day = parse_t86_table(j)
-        if code in day:
-            x = day[code]
-            frames.append({
-                'date': d,
-                'foreign': x['foreign'],
-                'trust': x['trust'],
-                'dealer': x['dealer'],
-                'total': x['total']
-            })
-        if len(frames) >= lookback:
+def institutional_day(date_str):
+    data=get_json("https://www.twse.com.tw/rwd/zh/fund/T86",
+                  {"date":date_str,"selectType":"ALLBUT0999","response":"json"}, timeout=5)
+    return parse_t86(data)
+
+@st.cache_data(ttl=900, show_spinner=False)
+def institutional_history_many(codes, lookback=20):
+    """一次並行取得最近交易日法人資料，避免每支股票重複打 20 次 API。"""
+    codes=tuple(str(c) for c in codes)
+    wanted=set(codes)
+    rows_by_code={c:[] for c in codes}
+    dates=[]
+    end=datetime.now()
+    for i in range(35):
+        d=end-timedelta(days=i)
+        if d.weekday()<5:
+            dates.append(d.strftime("%Y%m%d"))
+        if len(dates)>=lookback+5:
             break
 
-    if not frames:
-        return pd.DataFrame()
+    def fetch(ds):
+        return ds, institutional_day(ds)
 
-    return pd.DataFrame(frames).sort_values('date', ascending=False).reset_index(drop=True)
-
-@st.cache_data(ttl=900, show_spinner=False)
-def institutional_latest():
-    for d in latest_business_dates():
-        j = http_json(
-            'https://www.twse.com.tw/rwd/zh/fund/T86',
-            params={'date': d, 'selectType': 'ALLBUT0999', 'response': 'json'},
-            timeout=12
-        )
-        day = parse_t86_table(j)
-        if day:
-            return day
-    return {}
-
-def institution_stats(hist):
-    if hist is None or hist.empty:
-        return {'streak': 0, 'five': np.nan, 'twenty': np.nan}
-
-    vals = hist['total'].dropna().tolist()
-    streak = 0
-
-    if vals:
-        sign = 1 if vals[0] > 0 else -1 if vals[0] < 0 else 0
-        for v in vals:
-            if sign == 0:
-                break
-            if (sign == 1 and v > 0) or (sign == -1 and v < 0):
-                streak += 1
-            else:
-                break
-
-    return {
-        'streak': streak,
-        'five': hist['total'].head(5).sum(),
-        'twenty': hist['total'].head(20).sum()
-    }
-
-@st.cache_data(ttl=900, show_spinner=False)
-def price_history(code, days=260):
-    if yf is not None:
-        try:
-            df = yf.download(
-                f'{code}.TW',
-                period='2y',
-                interval='1d',
-                auto_adjust=False,
-                progress=False,
-                timeout=12
-            )
-
-            if isinstance(df, pd.DataFrame) and not df.empty:
-                if isinstance(df.columns, pd.MultiIndex):
-                    if code + '.TW' in df.columns.get_level_values(-1):
-                        try:
-                            df = df.xs(code + '.TW', axis=1, level=-1)
-                        except Exception:
-                            pass
-                    if isinstance(df.columns, pd.MultiIndex):
-                        if code + '.TW' in df.columns.get_level_values(0):
-                            try:
-                                df = df.xs(code + '.TW', axis=1, level=0)
-                            except Exception:
-                                pass
-                        if isinstance(df.columns, pd.MultiIndex):
-                            df.columns = [str(c[0]) for c in df.columns]
-
-                cols = [c for c in ['Open', 'High', 'Low', 'Close', 'Volume'] if c in df.columns]
-                df = df[cols].copy()
-
-                for c in cols:
-                    df[c] = pd.to_numeric(df[c], errors='coerce')
-
-                df = df.dropna(subset=['Close']).copy()
-
-                if len(df):
-                    return df.tail(days)
-        except Exception:
-            pass
-
-    frames = []
-    today = datetime.now().replace(day=1)
-
-    for m in range(0, 14):
-        month = today - timedelta(days=31*m)
-        d = month.strftime('%Y%m01')
-
-        j = http_json(
-            'https://www.twse.com.tw/rwd/zh/afterTrading/STOCK_DAY',
-            params={'date': d, 'stockNo': code, 'response': 'json'},
-            timeout=15
-        )
-
-        if not isinstance(j, dict) or not j.get('data'):
-            continue
-
-        for row in j['data']:
+    with ThreadPoolExecutor(max_workers=8) as ex:
+        futures=[ex.submit(fetch, ds) for ds in dates]
+        for fut in as_completed(futures):
             try:
-                date = pd.to_datetime(roc_to_ad(row[0]), errors='coerce')
-                if pd.isna(date):
-                    continue
-
-                # TWSE STOCK_DAY:
-                # 0日期 1成交股數 2成交金額 3開盤 4最高 5最低 6收盤 7漲跌 8成交筆數
-                frames.append({
-                    'Date': date,
-                    'Open': num(row[3]),
-                    'High': num(row[4]),
-                    'Low': num(row[5]),
-                    'Close': num(row[6]),
-                    'Volume': num(row[1])
-                })
+                ds,mp=fut.result()
             except Exception:
                 continue
+            if not mp:
+                continue
+            for code in wanted:
+                if code in mp and len(rows_by_code[code])<lookback:
+                    r=mp[code].copy(); r["日期"]=ds
+                    rows_by_code[code].append(r)
 
-    if not frames:
-        return pd.DataFrame()
+    out={}
+    for code,rows in rows_by_code.items():
+        if rows:
+            out[code]=pd.DataFrame(rows).sort_values("日期").reset_index(drop=True)
+        else:
+            out[code]=pd.DataFrame()
+    return out
 
-    df = (
-        pd.DataFrame(frames)
-        .drop_duplicates('Date')
-        .sort_values('Date')
-        .set_index('Date')
-    )
+def institution_stats_from_history(h):
+    if h is None or h.empty:
+        return {"法人連買":0,"法人連賣":0,"法人5日":np.nan,"法人20日":np.nan}
+    total=pd.to_numeric(h["法人合計"],errors="coerce")
+    buy=sell=0
+    for v in total.iloc[::-1]:
+        if pd.isna(v) or v==0: break
+        if v>0:
+            if sell: break
+            buy+=1
+        else:
+            if buy: break
+            sell+=1
+    return {"法人連買":buy,"法人連賣":sell,
+            "法人5日":total.tail(5).sum(min_count=1),
+            "法人20日":total.tail(20).sum(min_count=1)}
 
-    return df.tail(days)
+def institution_stats(code, latest):
+    h=institutional_history_many((code,),20).get(code,pd.DataFrame())
+    return institution_stats_from_history(h)
 
-@st.cache_data(ttl=21600, show_spinner=False)
-def revenue_history(code, months=60):
-    frames = []
-    today = datetime.now().replace(day=1)
+# ---------- 營收 ----------
+@st.cache_data(ttl=3600)
+def get_revenue():
+    data=get_json("https://openapi.twse.com.tw/v1/opendata/t187ap05_L")
+    return pd.DataFrame(data) if isinstance(data,list) else pd.DataFrame()
 
-    for m in range(0, min(months, 72)):
-        dt = today - timedelta(days=31*m)
+def revenue_for(code, rev):
+    if rev.empty: return {"營收":"—","YoY":"—","MoM":"—","累計":"—"}
+    cc=[c for c in rev.columns if "公司代號" in str(c) or "證券代號" in str(c)]
+    if not cc: return {"營收":"—","YoY":"—","MoM":"—","累計":"—"}
+    code_col=cc[0]
+    code_s=rev[code_col].astype(str).str.strip().str.replace(r"\.0$", "", regex=True)
+    target=str(code).strip()
+    rows=rev[code_s.isin({target, target.zfill(4)})]
+    if rows.empty: return {"營收":"—","YoY":"—","MoM":"—","累計":"—"}
+    r=rows.iloc[-1]
+    def pick(keys):
+        for c in rev.columns:
+            s=str(c)
+            if any(k in s for k in keys): return r[c]
+        return "—"
+    return {"營收":pick(["當月營收","本月營收"]), "YoY":pick(["前期比較增減(%)","年增率","年增"]), 
+            "MoM":pick(["上月比較增減(%)","月增率","月增"]), "累計":pick(["累計營收"])}
 
-        j = http_json(
-            'https://www.twse.com.tw/rwd/zh/afterTrading/FMSRFK',
-            params={
-                'date': dt.strftime('%Y%m01'),
-                'stockNo': code,
-                'response': 'json'
-            },
-            timeout=15
+# ---------- 技術 ----------
+@st.cache_data(ttl=1800, show_spinner=False)
+def price_history(code, period="1y"):
+    try:
+        d = yf.download(
+            f"{code}.TW", period=period, interval="1d",
+            auto_adjust=False, progress=False, timeout=8
         )
-
-        if not isinstance(j, dict) or not j.get('data'):
-            continue
-
-        for row in j['data']:
-            if not row:
-                continue
-
-            vals = [str(x).strip() for x in row]
-            date_idx = next(
-                (i for i, x in enumerate(vals) if re.search(r'\d{3,4}/\d{1,2}', x)),
-                0
-            )
-
-            date = pd.to_datetime(
-                roc_to_ad(vals[date_idx]),
-                errors='coerce'
-            )
-
-            if pd.isna(date):
-                continue
-
-            nums = [num(x) for x in vals]
-            candidates = [x for x in nums if not pd.isna(x)]
-
-            if not candidates:
-                continue
-
-            revenue = candidates[0]
-            frames.append({'date': date, 'revenue': revenue})
-
-    if not frames:
+        if d is None or d.empty:
+            return pd.DataFrame()
+        if isinstance(d.columns, pd.MultiIndex):
+            d.columns = d.columns.get_level_values(0)
+        cols=["Open","High","Low","Close","Volume"]
+        if not all(c in d.columns for c in cols):
+            return pd.DataFrame()
+        return d[cols].dropna()
+    except Exception:
         return pd.DataFrame()
 
-    df = pd.DataFrame(frames).drop_duplicates('date').sort_values('date')
-    return df.tail(months)
-
-def revenue_summary(df):
-    if df is None or df.empty:
-        return {
-            'yoy': np.nan, 'mom': np.nan,
-            'high5': np.nan, 'low5': np.nan,
-            'high12': np.nan, 'low12': np.nan,
-            'signal': '—'
-        }
-
-    s = df['revenue'].astype(float)
-
-    yoy = (
-        (s.iloc[-1] / s.iloc[-13] - 1) * 100
-        if len(s) >= 13 and s.iloc[-13]
-        else np.nan
-    )
-
-    mom = (
-        (s.iloc[-1] / s.iloc[-2] - 1) * 100
-        if len(s) >= 2 and s.iloc[-2]
-        else np.nan
-    )
-
-    last5 = s.tail(60)
-    last12 = s.tail(12)
-    cur = s.iloc[-1]
-
-    sig = '—'
-
-    if cur >= last5.max():
-        sig = '🔥 歷史新高（近5年）'
-    elif cur <= last5.min():
-        sig = '❄️ 歷史新低（近5年）'
-    elif cur >= last12.max():
-        sig = '🔥 近12月新高'
-    elif cur <= last12.min():
-        sig = '❄️ 近12月新低'
-
-    return {
-        'yoy': yoy,
-        'mom': mom,
-        'high5': s.max(),
-        'low5': s.min(),
-        'high12': last12.max(),
-        'low12': last12.min(),
-        'signal': sig
-    }
-
-def technicals(df):
-    if df is None or df.empty or len(df) < 30:
-        return {}
-
-    d = df.copy()
-    c, h, l = d['Close'], d['High'], d['Low']
-
-    d['MA5'] = c.rolling(5).mean()
-    d['MA10'] = c.rolling(10).mean()
-    d['MA20'] = c.rolling(20).mean()
-    d['MA60'] = c.rolling(60).mean()
-
-    delta = c.diff()
-    gain = delta.clip(lower=0).rolling(14).mean()
-    loss = -delta.clip(upper=0).rolling(14).mean()
-
-    rs = gain / loss.replace(0, np.nan)
-    d['RSI'] = 100 - 100/(1+rs)
-
-    ema12 = c.ewm(span=12, adjust=False).mean()
-    ema26 = c.ewm(span=26, adjust=False).mean()
-
-    d['MACD'] = ema12 - ema26
-    d['Signal'] = d['MACD'].ewm(span=9, adjust=False).mean()
-
-    mid = c.rolling(20).mean()
-    std = c.rolling(20).std()
-
-    d['BBU'] = mid + 2*std
-    d['BBL'] = mid - 2*std
-    d['BBWidth'] = (d['BBU'] - d['BBL']) / mid.replace(0, np.nan)
-
-    d['VolMA5'] = d['Volume'].rolling(5).mean()
-    d['VolRatio'] = d['Volume'] / d['VolMA5'].replace(0, np.nan)
-
+def technical(d):
+    d=d.copy()
+    for n in [5,10,20,60]: d[f"MA{n}"]=d.Close.rolling(n).mean()
+    d["V5"]=d.Volume.rolling(5).mean()
+    delta=d.Close.diff(); gain=delta.clip(lower=0).rolling(14).mean(); loss=(-delta.clip(upper=0)).rolling(14).mean()
+    d["RSI"]=100-100/(1+gain/loss.replace(0,np.nan))
+    e12=d.Close.ewm(span=12,adjust=False).mean(); e26=d.Close.ewm(span=26,adjust=False).mean()
+    d["MACD"]=e12-e26; d["MACDSignal"]=d.MACD.ewm(span=9,adjust=False).mean()
+    mid=d.Close.rolling(20).mean(); sd=d.Close.rolling(20).std()
+    d["BBUpper"]=mid+2*sd; d["BBLower"]=mid-2*sd
     return d
 
 def patterns(d):
-    if d is None or len(d) < 5:
-        return []
+    p=[]
+    if len(d)<10:return p
+    a,b=d.iloc[-2],d.iloc[-1]; body=abs(b.Close-b.Open); rng=max(b.High-b.Low,1e-9)
+    lower=min(b.Open,b.Close)-b.Low; upper=b.High-max(b.Open,b.Close)
+    if lower>body*2 and lower>upper*1.5 and b.Close>b.Low+rng*.5:p.append("金針探底")
+    if len(d)>=3:
+        x=d.iloc[-3:]; c1,c2,c3=x.iloc[0],x.iloc[1],x.iloc[2]
+        if all(r.Close>r.Open for _,r in x.iterrows()):p.append("紅三兵")
+        if c1.Close<c1.Open and abs(c2.Close-c2.Open)<abs(c1.Close-c1.Open)*.5 and c3.Close>c3.Open and c3.Close>(c1.Open+c1.Close)/2:p.append("早晨之星")
+        l1=min(c1.Open,c1.Close)-c1.Low; l2=min(c2.Open,c2.Close)-c2.Low
+        if l1>abs(c1.Close-c1.Open)*1.5 and l2>abs(c2.Close-c2.Open)*1.5:p.append("雙針探底")
+    if a.Close<a.Open and b.Close>b.Open and b.Close>a.Close:p.append("反攻")
+    if a.Close<a.Open and b.Close>b.Open and b.Close>(a.Open+a.Close)/2:p.append("曙光出現")
+    if len(d)>=20:
+        if b.Close>d.High.iloc[-21:-1].max():p.append("突破前高")
+        if pd.notna(b.V5) and b.Close>b.Open and b.Volume>b.V5*1.5:p.append("量增紅K")
+        if b.MA5>b.MA10>b.MA20:p.append("均線多頭")
+        if d.MA5.iloc[-2]<=d.MA20.iloc[-2] and b.MA5>b.MA20:p.append("均線黃金交叉")
+        if b.Close>b.MA5 and b.Close>b.MA10 and b.Close>b.MA20 and a.Close<a.MA20:p.append("一陽穿三線")
+        if pd.notna(b.V5) and b.Volume>b.V5*2:p.append("爆量")
+    if len(d)>=60 and b.Close>b.MA5 and b.Close>b.MA10 and b.Close>b.MA20 and b.Close>b.MA60 and a.Close<a.MA20:p.append("出水芙蓉")
+    return p
 
-    x = d.iloc[-5:].copy()
-    out = []
+# ---------- 訊號分類 ----------
+def signal_label(row):
+    """
+    純規則化技術/籌碼訊號，不代表保證獲利。
+    「可買」是符合預設條件的研究訊號；「注意」代表條件不足或風險較高。
+    """
+    score = float(row.get("雷達分數", 0))
+    rsi = row.get("RSI", np.nan)
+    total = row.get("法人合計", np.nan)
+    patterns_text = str(row.get("K線型態", ""))
 
-    last = x.iloc[-1]
-    prev = x.iloc[-2]
+    bullish = any(x in patterns_text for x in [
+        "突破前高", "出水芙蓉", "一陽穿三線",
+        "均線多頭", "均線黃金交叉", "紅三兵",
+        "早晨之星", "曙光出現", "反攻", "金針探底"
+    ])
 
-    body = abs(last.Close-last.Open)
-    rng = max(last.High-last.Low, 1e-9)
+    overheat = pd.notna(rsi) and rsi >= 75
+    institution_ok = pd.notna(total) and total > 0
 
-    if (
-        (min(last.Open,last.Close)-last.Low) > body*1.8
-        and (last.High-max(last.Open,last.Close)) < rng*0.25
-    ):
-        out.append('金針探底')
+    if score >= 75 and bullish and not overheat and institution_ok:
+        return "可買"
 
-    if all(x.iloc[i].Close > x.iloc[i].Open for i in range(2,5)):
-        out.append('紅三兵')
+    return "注意"
 
-    if (
-        last.Close > last.MA20
-        and prev.Close <= prev.MA20
-        and last.Volume > x.Volume.tail(5).mean()*1.3
-    ):
-        out.append('突破均線')
 
-    if len(d) >= 60 and last.MA5 > last.MA10 > last.MA20 > last.MA60:
-        out.append('五線順上')
+def signal_reason(row):
+    reasons = []
+    if float(row.get("雷達分數", 0)) >= 75:
+        reasons.append("雷達分數達75以上")
+    if pd.notna(row.get("法人合計", np.nan)) and row.get("法人合計", 0) > 0:
+        reasons.append("三大法人合計買超")
+    if row.get("法人連買", 0) and row.get("法人連買", 0) >= 3:
+        reasons.append(f"法人連買{int(row['法人連買'])}天")
+    p = str(row.get("K線型態", ""))
+    for x in ["突破前高","出水芙蓉","一陽穿三線","均線多頭","紅三兵","早晨之星"]:
+        if x in p:
+            reasons.append(x)
+    if pd.notna(row.get("RSI", np.nan)) and row.get("RSI", 0) >= 75:
+        reasons.append("RSI偏熱")
+    return "、".join(reasons[:4]) if reasons else "目前條件不足"
 
-    if (
-        last.Close > prev.High
-        and last.Volume > x.Volume.tail(5).mean()*1.5
-    ):
-        out.append('突破缺口／強勢突破')
 
-    if (
-        last.Close > last.MA20
-        and abs(last.Close-last.MA20)/last.MA20 < .025
-        and last.Low <= last.MA20*1.005
-    ):
-        out.append('回踩支撐確認')
+# ---------- 分析 ----------
+def analyze(code,name,inst,rev,hist=None):
+    d=price_history(code)
+    if d.empty or len(d)<60:
+        return {"代號":code,"名稱":name,"收盤":np.nan,"外資":inst.get("外資",np.nan),
+                "投信":inst.get("投信",np.nan),"自營商":inst.get("自營商",np.nan),
+                "法人合計":inst.get("法人合計",np.nan),"法人連買":0,"法人連賣":0,
+                "法人5日":np.nan,"法人20日":np.nan,"營收":"—","營收YoY":"—","營收MoM":"—",
+                "累計營收":"—","RSI":np.nan,"MACD":np.nan,"K線型態":"資料不足","雷達分數":0}
+    d=technical(d); ps=patterns(d)
+    stats=institution_stats_from_history(hist if hist is not None else pd.DataFrame())
+    rv=revenue_for(code,rev)
+    total=inst.get("法人合計",np.nan)
+    score=50+min(25,len(ps)*5)
+    if pd.notna(total): score += 8 if total>0 else -5 if total<0 else 0
+    if stats["法人連買"] and stats["法人連買"]>=3: score+=5
+    if pd.notna(d.Close.iloc[-1]) and pd.notna(d.MA20.iloc[-1]): score += 5 if d.Close.iloc[-1]>d.MA20.iloc[-1] else -3
+    score=int(max(0,min(100,score)))
+    return {"代號":code,"名稱":name,"收盤":round(float(d.Close.iloc[-1]),2),
+            "外資":inst.get("外資",np.nan),"投信":inst.get("投信",np.nan),"自營商":inst.get("自營商",np.nan),
+            "法人合計":total,"法人連買":stats["法人連買"],"法人連賣":stats["法人連賣"],
+            "法人5日":stats["法人5日"],"法人20日":stats["法人20日"],
+            "營收":rv["營收"],"營收YoY":rv["YoY"],"營收MoM":rv["MoM"],"累計營收":rv["累計"],
+            "RSI":round(float(d.RSI.iloc[-1]),1) if pd.notna(d.RSI.iloc[-1]) else np.nan,
+            "MACD":round(float(d.MACD.iloc[-1]),3) if pd.notna(d.MACD.iloc[-1]) else np.nan,
+            "K線型態":"、".join(ps) if ps else "—","雷達分數":score}
 
-    if prev.Close < prev.Open and last.Close > last.Open and last.Close > prev.High:
-        out.append('反攻')
+# ---------- 專業 UI ----------
+st.markdown("""
+<style>
+.main-title{font-size:34px;font-weight:800;margin-bottom:0}
+.sub-title{color:#6b7280;margin:2px 0 18px}
+.search-box{padding:18px;border:1px solid #e5e7eb;border-radius:16px;background:#fff;box-shadow:0 3px 12px rgba(0,0,0,.05)}
+.section{font-size:22px;font-weight:800;margin-top:18px}
+.signal-buy{padding:8px 16px;border-radius:999px;font-size:19px;font-weight:800;display:inline-block;background:#e8f7ee;color:#15803d}
+.signal-watch{padding:8px 16px;border-radius:999px;font-size:19px;font-weight:800;display:inline-block;background:#fff7df;color:#a16207}
+</style>
+""", unsafe_allow_html=True)
 
-    return list(dict.fromkeys(out))
+st.markdown('<div class="main-title">📈 台股雷達 PRO</div>', unsafe_allow_html=True)
+st.markdown('<div class="sub-title">法人籌碼 × 財報 × 營收 × 技術分析 × K線型態</div>', unsafe_allow_html=True)
 
-def score_stock_v17(inst, hist, t, rev):
-    if t is None or t.empty:
-        return None
+# 主畫面直接輸入，不必操作左側選單
+st.markdown('<div class="search-box">', unsafe_allow_html=True)
+st.markdown("### 🔎 輸入股票")
+codes_text = st.text_area(
+    "股票代號或名稱",
+    placeholder="例如：\n2330\n2317\n2454\n\n或輸入：2330,2317,2454",
+    height=110,
+    label_visibility="collapsed"
+)
+run = st.button("🔍 開始分析", type="primary", width="stretch")
+st.caption("可輸入多檔：一行一檔，或用逗號／空格／頓號分隔；例如 2330, 2317, 2454")
+st.markdown('</div>', unsafe_allow_html=True)
 
-    if 'VolRatio' not in t.columns and 'Volume' in t.columns:
-        t = t.copy()
-        t['VolMA5'] = t['Volume'].rolling(5).mean()
-        t['VolRatio'] = t['Volume'] / t['VolMA5'].replace(0, np.nan)
+# 進階設定留在側欄，日常使用不必碰
+with st.sidebar.expander("⚙️ 進階設定", expanded=False):
+    scan_market = st.checkbox("掃描 TWSE 股票清單", False)
+    limit = st.slider("市場測試檔數", 10, 100, 30)
+    min_score = st.slider("最低雷達分數", 0, 100, 50)
 
-    a = t.iloc[-1]
-    stt = institution_stats(hist)
-    pats = patterns(t)
+if run:
+    with st.status("🔄 正在分析，請稍候…", expanded=True) as status:
+        st.write("① 取得股票清單…")
+        market = get_twse_list()
+        st.write("② 取得法人資料…")
+        inst_map, inst_source = institutional_latest()
+        st.write("③ 取得營收資料…")
+        rev = get_revenue()
 
-    ip = 12.5
-    ir = []
+    name_to_code = {}
+    code_to_name = {}
+    if not market.empty:
+        for _, rr in market.iterrows():
+            c = str(rr["代號"]).strip()
+            n = str(rr["名稱"]).strip()
+            code_to_name[c] = n
+            name_to_code[n] = c
 
-    latest_total = inst.get('total', np.nan) if inst else np.nan
-
-    if not pd.isna(latest_total):
-        if latest_total > 0:
-            ip += 6
-            ir.append('法人當日買超')
-        elif latest_total < 0:
-            ip -= 6
-            ir.append('法人當日賣超')
-
-    if not pd.isna(stt['five']):
-        ip += 4 if stt['five'] > 0 else -4 if stt['five'] < 0 else 0
-
-    if not pd.isna(stt['twenty']):
-        ip += 2.5 if stt['twenty'] > 0 else -2.5 if stt['twenty'] < 0 else 0
-
-    ip = max(0, min(25, ip))
-
-    tp = 10
-    tr = []
-
-    if a.Close > a.MA20:
-        tp += 3
-        tr.append('站上MA20')
-    elif a.Close < a.MA20:
-        tp -= 3
-
-    if not pd.isna(a.MA60):
-        tp += 2 if a.Close > a.MA60 else -2
-
-    if a.MA5 > a.MA10 > a.MA20:
-        tp += 2
-        tr.append('均線多頭')
-
-    if a.MACD > a.Signal:
-        tp += 2
-        tr.append('MACD多方')
+    if scan_market:
+        codes = market["代號"].head(limit).tolist() if not market.empty else []
+        st.info(f"市場模式目前先測試 {len(codes)} 檔。")
     else:
-        tp -= 2
+        raw = codes_text.strip()
+        if not raw:
+            st.warning("請先輸入股票代號或名稱。")
+            st.stop()
 
-    if 45 <= a.RSI <= 70:
-        tp += 1
-    elif a.RSI > 80:
-        tp -= 2
-    elif a.RSI < 35:
-        tp -= 1
-
-    tp = max(0, min(20, tp))
-
-    kp = min(20, 10 + min(10, len(pats)*2)) if pats else 10
-    kr = pats[:4]
-
-    rp = 7.5
-    rr = []
-
-    yoy = rev.get('yoy', np.nan) if rev else np.nan
-
-    if not pd.isna(yoy):
-        if yoy >= 10:
-            rp += 4
-            rr.append('營收YoY成長')
-        elif yoy <= -10:
-            rp -= 4
-
-    if rev and '🔥' in str(rev.get('signal','')):
-        rp += 3
-        rr.append('營收創高')
-    elif rev and '❄️' in str(rev.get('signal','')):
-        rp -= 3
-
-    rp = max(0, min(15, rp))
-
-    fp = 7.5
-
-    vp = 2.5
-    vr = []
-
-    if not pd.isna(a.VolRatio):
-        if a.VolRatio >= 1.5:
-            vp += 2.5
-            vr.append('成交量放大')
-        elif a.VolRatio < 0.7:
-            vp -= 1
-
-    vp = max(0, min(5, vp))
-
-    total = round(ip+tp+kp+rp+fp+vp)
-    reasons = list(dict.fromkeys(ir+tr+kr+rr+vr))
-
-    return {
-        'score': int(total),
-        'label': '🟢 偏多訊號' if total >= 75 else '🟡 注意',
-        'inst_points': round(ip,1),
-        'tech_points': round(tp,1),
-        'k_points': round(kp,1),
-        'revenue_points': round(rp,1),
-        'fund_points': round(fp,1),
-        'volume_points': round(vp,1),
-        'patterns': '、'.join(pats) if pats else '—',
-        'reason': '、'.join(reasons)
-    }
-
-def score_stock(code, name, market_row, inst, hist, price_df, rev_df):
-    t = technicals(price_df)
-
-    if t is None or t.empty:
-        return None
-
-    rev = revenue_summary(rev_df)
-    latest = inst or {}
-
-    s = score_stock_v17(latest, hist, t, rev)
-
-    if s is None:
-        return None
-
-    stats = institution_stats(hist)
-    total = latest.get('total', np.nan) if latest else np.nan
-    last = t.iloc[-1]
-
-    return {
-        'code': code,
-        'name': name,
-        'score': s['score'],
-        'label': s['label'],
-        'close': float(last.Close),
-        'change': market_row.get('change',np.nan),
-        'foreign': latest.get('foreign',np.nan),
-        'trust': latest.get('trust',np.nan),
-        'dealer': latest.get('dealer',np.nan),
-        'inst_total': total,
-        'streak': stats['streak'],
-        'five': stats['five'],
-        'twenty': stats['twenty'],
-        'rsi': last.RSI,
-        'patterns': s['patterns'],
-        'revenue_signal': rev['signal'],
-        'revenue_yoy': rev['yoy'],
-        'reason': s['reason'],
-        'inst_points': s['inst_points'],
-        'tech_points': s['tech_points'],
-        'k_points': s['k_points'],
-        'revenue_points': s['revenue_points'],
-        'fund_points': s['fund_points'],
-        'volume_points': s['volume_points']
-    }
-
-def load_cache():
-    try:
-        return json.loads(CACHE_FILE.read_text(encoding='utf-8'))
-    except Exception:
-        return None
-
-@st.cache_data(ttl=1800, show_spinner=False)
-def live_radar():
-    universe = stock_universe()
-
-    if universe.empty:
-        return pd.DataFrame()
-
-    # 先掃成交金額最高 20 檔，避免首頁因大量 API 請求 timeout。
-    u = universe.sort_values('turnover', ascending=False).head(20).copy()
-
-    inst = institutional_latest()
-    results = []
-
-    for _, r in u.iterrows():
-        code = r.code
-
-        try:
-            p = price_history(code, 180)
-
-            if p.empty:
-                continue
-
-            h = institutional_history(code, 20)
-            rv = revenue_history(code, 24)
-
-            z = score_stock(
-                code,
-                r['name'],
-                r.to_dict(),
-                inst.get(code, {}),
-                h,
-                p,
-                rv
-            )
-
-            if z:
-                results.append(z)
-
-        except Exception:
-            continue
-
-    if not results:
-        return pd.DataFrame()
-
-    return pd.DataFrame(results).sort_values('score', ascending=False)
-
-def market_only_radar():
-    u = stock_universe()
-
-    if u.empty:
-        return pd.DataFrame()
-
-    x = u.copy()
-    x = x[(x["close"].notna()) & (x["turnover"].notna())]
-
-    if x.empty:
-        return pd.DataFrame()
-
-    med_turn = x["turnover"].replace(0, np.nan).median()
-
-    if pd.isna(med_turn) or med_turn <= 0:
-        med_turn = 1.0
-
-    x["score"] = 50.0
-    x["score"] += x["change"].fillna(0).clip(-10, 10) * 2.0
-    x["score"] += np.log1p(
-        x["turnover"].clip(lower=0) / med_turn
-    ).clip(-3, 3) * 4.0
-
-    x["score"] = x["score"].clip(0, 100).round().astype(int)
-    x["label"] = np.where(
-        x["score"] >= 75,
-        "🟢 偏多訊號",
-        "🟡 注意"
-    )
-
-    x["inst_total"] = np.nan
-    x["five"] = np.nan
-    x["twenty"] = np.nan
-    x["rsi"] = np.nan
-    x["revenue_yoy"] = np.nan
-    x["revenue_signal"] = "—"
-    x["patterns"] = "—"
-
-    x["reason"] = np.where(
-        x["change"].fillna(0) > 0,
-        "當日股價上漲＋成交金額",
-        "成交金額活躍"
-    )
-
-    return x[
-        [
-            "code","name","score","label","close","change",
-            "inst_total","five","twenty","rsi","patterns",
-            "revenue_signal","revenue_yoy","reason"
+        # 支援：換行、空格、半形/全形逗號、頓號、分號
+        tokens = [
+            x.strip()
+            for x in re.split(r"[\\s,，、;；]+", raw)
+            if x.strip()
         ]
-    ].sort_values("score", ascending=False).head(30).reset_index(drop=True)
 
-def cached_or_live_radar():
-    c = load_cache()
+        codes = []
+        unresolved = []
 
-    if isinstance(c, dict) and c.get('results'):
-        return pd.DataFrame(c['results']), c.get('generated_at', '')
-
-    live = live_radar()
-
-    if not live.empty:
-        return live, datetime.now().strftime('%Y-%m-%d %H:%M')
-
-    fallback = market_only_radar()
-
-    return (
-        fallback,
-        datetime.now().strftime('%Y-%m-%d %H:%M')
-        if not fallback.empty else ''
-    )
-
-def cached_or_live_radar():
-    c = load_cache()
-    if isinstance(c, dict) and c.get('results'):
-        return pd.DataFrame(c['results']), c.get('generated_at', '')
-
-    # 重要：首頁絕對不要在啟動時 live_radar()。
-    # 沒有 GitHub Actions 快取時，改用輕量市場資料，避免 App 卡在 Loading。
-    fallback = market_only_radar()
-    return (fallback, datetime.now().strftime('%Y-%m-%d %H:%M') if not fallback.empty else '')
-
-# -----------------------------
-# UI
-# -----------------------------
-st.title('📈 台股雷達 PRO')
-st.caption('法人籌碼 × 營收 × 技術分析 × K線型態｜自動選股 + 個股查詢')
-
-# 側邊選單：保留上一版的操作方式
-with st.sidebar:
-    st.markdown('## 📈 台股雷達 PRO')
-    page = st.radio(
-        '功能選單',
-        ['🔥 今日雷達', '🔎 個股分析', '⚙️ 系統狀態'],
-        index=0
-    )
-    st.divider()
-    st.caption('資料來源：TWSE 官方資料 + yfinance')
-
-
-def render_radar():
-    st.subheader('🔥 今日自動雷達')
-    st.caption('首頁只讀快取或輕量市場資料，不會啟動時掃描 20 檔股票。')
-
-    cache_df, cache_time = cached_or_live_radar()
-
-    if cache_df.empty:
-        st.warning('目前沒有可用的市場資料，請稍後重新整理。')
-        return
-
-    if cache_time:
-        st.caption(f'資料時間：{cache_time}')
-
-    c1, c2, c3, c4 = st.columns(4)
-    c1.metric('偏多訊號', int((cache_df.score >= 75).sum()))
-    c2.metric('觀察名單', int(((cache_df.score >= 60) & (cache_df.score < 75)).sum()))
-    c3.metric('法人5日偏多', int((cache_df.five.fillna(0) > 0).sum()))
-    c4.metric('營收創高', int(cache_df.revenue_signal.astype(str).str.contains('新高').sum()))
-
-    display = cache_df.head(30).copy()
-    display['法人合計'] = display.inst_total.map(lambda x: f'{lots(x):,.1f} 張' if not pd.isna(x) else '—')
-    display['法人5日'] = display.five.map(lambda x: f'{lots(x):,.1f} 張' if not pd.isna(x) else '—')
-    display['RSI'] = display.rsi.map(lambda x: f'{x:.1f}' if not pd.isna(x) else '—')
-    display['營收YoY'] = display.revenue_yoy.map(lambda x: f'{x:.1f}%' if not pd.isna(x) else '—')
-
-    st.dataframe(
-        display[['code','name','label','score','close','法人合計','法人5日','RSI','營收YoY','revenue_signal','patterns','reason']],
-        width='stretch', hide_index=True,
-        column_config={
-            'code':'代號','name':'名稱','label':'雷達訊號','score':'總分',
-            'close':'收盤','revenue_signal':'營收訊號','patterns':'K線型態','reason':'主要原因'
-        }
-    )
-
-    st.info('💡 自動雷達如果有 GitHub Actions 產生的 radar_cache.json，首頁會直接顯示完整法人＋技術＋營收結果；沒有快取時則先顯示輕量市場雷達，避免首頁卡住。')
-
-
-def render_stock_analysis():
-    st.subheader('🔎 個股分析')
-    st.caption('輸入代號或名稱後按「開始分析」，資料才會開始抓取。')
-
-    query = st.text_area(
-        '股票代號／名稱',
-        placeholder='例如：2330, 2317, 2454\n或：台積電',
-        height=90,
-        key='stock_query'
-    )
-
-    col1, col2 = st.columns([1, 4])
-    with col1:
-        run = st.button('🔍 開始分析', type='primary', width='stretch')
-
-    if not run:
-        st.info('請輸入股票代號，例如 2330，然後按「開始分析」。')
-        return
-
-    if not query.strip():
-        st.warning('請先輸入股票代號或名稱。')
-        return
-
-    with st.status('正在準備分析資料…', expanded=True) as status:
-        st.write('① 取得股票清單')
-        universe = stock_universe()
-
-        tokens = [x.strip() for x in re.split(r'[\s,，、;；|]+', query.strip()) if x.strip()]
-        seen = set()
-        tokens = [x for x in tokens if not (x in seen or seen.add(x))]
-
-        selected = []
         for token in tokens:
-            m = universe[universe['code'].eq(token)]
-            if m.empty:
-                m = universe[universe['name'].str.contains(token, case=False, na=False)]
-            if not m.empty:
-                selected.append(m.iloc[0].to_dict())
+            if token in code_to_name:
+                codes.append(token)
+            elif token in name_to_code:
+                codes.append(name_to_code[token])
+            else:
+                # 支援部分名稱搜尋，例如「台積」
+                matches = [c for c, n in code_to_name.items() if token in n]
+                if matches:
+                    codes.append(matches[0])
+                elif token.isdigit():
+                    codes.append(token)
+                else:
+                    unresolved.append(token)
 
-        if not selected:
-            status.update(label='找不到股票', state='error')
-            st.warning('找不到符合的股票代號／名稱。')
-            return
+        codes = list(dict.fromkeys(codes))
 
-        st.write(f'② 找到 {len(selected)} 檔：' + '、'.join(x['code'] for x in selected))
-        st.write('③ 取得法人資料')
-        inst_all = institutional_latest()
-        st.write('④ 開始取得股價、法人歷史與營收')
+        if unresolved:
+            st.warning("以下項目找不到： " + "、".join(unresolved))
 
-        results=[]
-        progress=st.progress(0)
-        for i,r in enumerate(selected):
-            code,name=r['code'],r['name']
-            p=price_history(code,260)
-            if p.empty:
-                st.warning(f'{code} {name}：價格資料暫時無法取得。')
-                progress.progress((i+1)/len(selected))
-                continue
-            h=institutional_history(code,20)
-            rv=revenue_history(code,60)
-            t=technicals(p)
-            inst=inst_all.get(code,{})
-            stats=institution_stats(h)
-            rev=revenue_summary(rv)
-            pats=patterns(t)
-            score_obj=score_stock(code,name,r,inst,h,p,rv)
-            results.append((r,p,h,rv,t,inst,stats,rev,pats,score_obj))
-            progress.progress((i+1)/len(selected))
-        progress.empty()
-        status.update(label='分析完成', state='complete')
+        if not codes:
+            st.error("找不到股票。請輸入正確的股票代號或名稱。")
+            st.stop()
 
-    if not results:
-        st.error('沒有取得足夠的價格資料。')
-        return
+    st.caption(f"法人資料來源：{inst_source}")
 
-    for r,p,h,rv,t,inst,stats,rev,pats,score_obj in results:
-        code,name=r['code'],r['name']
-        last=t.iloc[-1]
-        score=score_obj['score'] if score_obj else 50
-        label=score_obj['label'] if score_obj else '🟡 注意'
-        total=inst.get('foreign',np.nan)+inst.get('trust',np.nan)+inst.get('dealer',np.nan) if inst else np.nan
+    # 一次並行取得所有查詢股票的法人歷史，避免每檔股票各打 20 次 API。
+    with st.status("🏦 正在取得法人歷史資料…", expanded=False):
+        history_map = institutional_history_many(tuple(codes), 20)
 
-        st.divider()
-        st.markdown(f'## 📌 {code} {name or "（名稱未取得）"}')
-        st.caption(f'{label}｜雷達分數 {score}')
-        if score_obj:
-            st.write(
-                f'籌碼 {score_obj.get("inst_points",0)}/25 ｜ 技術 {score_obj.get("tech_points",0)}/20 ｜ '
-                f'K線 {score_obj.get("k_points",0)}/20 ｜ 營收 {score_obj.get("revenue_points",0)}/15 ｜ '
-                f'財報 {score_obj.get("fund_points",0)}/15 ｜ 量價 {score_obj.get("volume_points",0)}/5'
-            )
-            st.caption('主要訊號：' + (score_obj.get('reason') or '—'))
+    results = []
+    bar = st.progress(0, text="📈 正在分析股價、技術與 K 線…")
 
-        a,b,c,d=st.columns(4)
-        a.metric('收盤',fmt(last.Close,2))
-        b.metric('雷達分數',score)
-        c.metric('法人連買/賣',f'{stats["streak"]} 天')
-        d.metric('RSI',fmt(last.RSI,1))
+    for i, c in enumerate(codes):
+        r = analyze(c, code_to_name.get(c, ""), inst_map.get(c, {}), rev, history_map.get(c, pd.DataFrame()))
+        if r:
+            r["訊號"] = signal_label(r)
+            r["訊號原因"] = signal_reason(r)
+            results.append(r)
+        bar.progress((i + 1) / max(len(codes), 1))
 
-        tabs=st.tabs(['🏦 法人','📈 技術 / K線','💰 營收','📊 財報'])
-        with tabs[0]:
-            st.write(f'外資：{fmt(lots(inst.get("foreign",np.nan)),1)} 張')
-            st.write(f'投信：{fmt(lots(inst.get("trust",np.nan)),1)} 張')
-            st.write(f'自營商：{fmt(lots(inst.get("dealer",np.nan)),1)} 張')
-            st.write(f'法人合計：{fmt(lots(total),1)} 張')
-            st.write(f'法人連買／賣：{stats["streak"]} 天')
-            st.write(f'法人5日：{fmt(lots(stats["five"]),1)} 張')
-            st.write(f'法人20日：{fmt(lots(stats["twenty"]),1)} 張')
-            if not h.empty:
-                hh=h.copy()
-                for col in ['foreign','trust','dealer','total']:
-                    hh[col]=hh[col].map(lots)
-                st.dataframe(hh.rename(columns={'date':'日期','foreign':'外資(張)','trust':'投信(張)','dealer':'自營商(張)','total':'合計(張)'}),width='stretch',hide_index=True)
-        with tabs[1]:
-            cols=st.columns(4)
-            cols[0].metric('MA5',fmt(last.MA5,2)); cols[1].metric('MA20',fmt(last.MA20,2)); cols[2].metric('MA60',fmt(last.MA60,2)); cols[3].metric('MACD',fmt(last.MACD,2))
-            st.write(f'K線型態：**{("、".join(pats) if pats else "—")}**')
-            st.dataframe(t.tail(40)[['Open','High','Low','Close','Volume','MA5','MA10','MA20','MA60','RSI','MACD','Signal']],width='stretch')
-        with tabs[2]:
-            st.write(f'本月營收：{fmt(rv.revenue.iloc[-1],0) if not rv.empty else "—"}')
-            st.write(f'YoY：{fmt(rev["yoy"],1)}%｜MoM：{fmt(rev["mom"],1)}%')
-            st.write(f'最高：{fmt(rev["high5"],0)}｜最低：{fmt(rev["low5"],0)}')
-            st.write(f'近12月最高：{fmt(rev["high12"],0)}｜近12月最低：{fmt(rev["low12"],0)}')
-            st.write(f'訊號：**{rev["signal"]}**')
-            if not rv.empty: st.line_chart(rv.set_index('date')['revenue'])
-        with tabs[3]:
-            st.info('財報資料目前維持「未取得＝中性」原則；未取得經驗證的官方欄位，不參與加分。')
+    bar.empty()
 
+    if results:
+        df = pd.DataFrame(results).sort_values("雷達分數", ascending=False)
+        show = df[df["雷達分數"] >= min_score].copy()
 
-def render_status():
-    st.subheader('⚙️ 系統狀態')
-    st.write(f'Python / Streamlit：正常啟動')
-    st.write(f'yfinance：{"已載入" if yf is not None else "未載入，將使用 TWSE 備援"}')
-    cache=load_cache()
-    if isinstance(cache,dict) and cache.get('results'):
-        st.success(f'已找到 radar_cache.json：{len(cache["results"])} 筆雷達資料')
-        st.caption(f'快取時間：{cache.get("generated_at", "未知")}')
+        buy_count = int((df["訊號"] == "可買").sum())
+        watch_count = int((df["訊號"] == "注意").sum())
+
+        a,b,c,d = st.columns(4)
+        a.metric("分析股票", len(df))
+        b.metric("符合分數", len(show))
+        c.metric("🟢 可買", buy_count)
+        d.metric("🟡 注意", watch_count)
+
+        st.markdown('<div class="section">📊 分析結果</div>', unsafe_allow_html=True)
+
+        display_cols = [
+            "代號","名稱","收盤","訊號","雷達分數",
+            "外資","投信","自營商","法人合計",
+            "法人連買","法人5日","法人20日",
+            "營收YoY","RSI","K線型態"
+        ]
+        display_cols = [x for x in display_cols if x in show.columns]
+
+        st.dataframe(
+            show[display_cols],
+            width="stretch",
+            hide_index=True
+        )
+
+        st.markdown('<div class="section">🔎 個股詳細分析</div>', unsafe_allow_html=True)
+
+        selected = st.selectbox(
+            "選擇分析結果",
+            df["代號"].tolist(),
+            format_func=lambda x: f"{x}｜{code_to_name.get(x, '')}"
+        )
+        r = df[df["代號"] == selected].iloc[0]
+
+        badge = "signal-buy" if r["訊號"] == "可買" else "signal-watch"
+        st.markdown(f'<div class="{badge}">{r["訊號"]}</div>', unsafe_allow_html=True)
+        st.caption(f"訊號依據：{r['訊號原因']}")
+        st.caption(f"資料狀態｜法人：{inst_source}｜價格：yfinance／TWSE 備援｜營收：TWSE 官方資料")
+
+        a,b,c,d = st.columns(4)
+        a.metric("收盤", r["收盤"])
+        b.metric("雷達分數", r["雷達分數"])
+        c.metric("法人連買", f"{int(r['法人連買'])} 天" if pd.notna(r["法人連買"]) else "—")
+        d.metric("RSI", r["RSI"] if pd.notna(r["RSI"]) else "—")
+
+        tab1,tab2,tab3 = st.tabs(["🏦 法人","📈 技術 / K線","💰 營收"])
+
+        with tab1:
+            st.write(f"外資：{r['外資'] if pd.notna(r['外資']) else '—'}")
+            st.write(f"投信：{r['投信'] if pd.notna(r['投信']) else '—'}")
+            st.write(f"自營商：{r['自營商'] if pd.notna(r['自營商']) else '—'}")
+            st.write(f"三大法人合計：{r['法人合計'] if pd.notna(r['法人合計']) else '—'}")
+            st.write(f"法人連買：{r['法人連買'] if pd.notna(r['法人連買']) else '—'} 天")
+            st.write(f"法人5日：{r['法人5日'] if pd.notna(r['法人5日']) else '—'}")
+            st.write(f"法人20日：{r['法人20日'] if pd.notna(r['法人20日']) else '—'}")
+
+        with tab2:
+            st.write(f"RSI：{r['RSI']}")
+            st.write(f"MACD：{r['MACD']}")
+            st.write(f"**K線型態：{r['K線型態']}**")
+            st.info("訊號為固定規則產生的研究結果；「可買」不代表保證上漲。")
+
+        with tab3:
+            st.write(f"當月營收：{r['營收']}")
+            st.write(f"YoY：{r['營收YoY']}")
+            st.write(f"MoM：{r['營收MoM']}")
+            st.write(f"累計營收：{r['累計營收']}")
+
     else:
-        st.warning('目前沒有 radar_cache.json；首頁會使用輕量市場資料，不會因此卡住。')
+        st.warning("沒有取得足夠的歷史資料。")
 
-
-if page == '🔥 今日雷達':
-    render_radar()
-elif page == '🔎 個股分析':
-    render_stock_analysis()
 else:
-    render_status()
+    st.markdown('<div class="section">📌 使用方式</div>', unsafe_allow_html=True)
+    st.markdown("""
+**直接在上方輸入：**
 
-st.divider()
-st.caption('資料來源以 TWSE 官方資料為主；yfinance 作為價格歷史備援。雷達屬條件篩選與研究工具，不代表個別投資建議。')
+- `2330`
+- `台積電`
+- `2330, 2317, 2454`
+
+按 **🔍 開始分析** 即可。
+
+### 🔥 訊號
+🟢 **可買**：符合預設的技術＋法人條件  
+🟡 **注意**：條件不足或出現偏熱等風險訊號
+
+### 四大雷達
+🏦 法人｜💰 營收｜📈 技術｜🔥 K線型態
+""")

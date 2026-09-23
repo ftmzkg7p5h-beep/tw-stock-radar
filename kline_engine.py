@@ -67,6 +67,8 @@ def prepare(df):
     d["BBLower"] = mid - 2 * sd
     d["Return5"] = d["Close"].pct_change(5) * 100
     d["Return20"] = d["Close"].pct_change(20) * 100
+    tr = pd.concat([d["High"]-d["Low"], (d["High"]-d["Close"].shift()).abs(), (d["Low"]-d["Close"].shift()).abs()], axis=1).max(axis=1)
+    d["ATR14"] = tr.rolling(14).mean()
     return d
 
 
@@ -160,26 +162,25 @@ def score(d,bullish,bearish,institution_total=np.nan,institution_5d=np.nan,insti
     fundamental=0
     if pd.notna(revenue_yoy): fundamental += 6 if revenue_yoy>10 else 3 if revenue_yoy>0 else -5
     total=int(np.clip(50+technical+chip+fundamental,0,100))
-    # 五級多空判斷 + 進場狀態
-    if total>=85 and not(pd.notna(rsi) and rsi>=75): signal="強勢買進"
-    elif total>=75: signal="偏多"
-    elif total>=60: signal="觀察"
-    elif total>=45: signal="偏空"
-    else: signal="弱勢"
-
-    if total < 45:
-        entry="暫不考慮"
-    elif pd.notna(rsi) and rsi>=75:
-        entry="不要追高"
-    elif total>=75 and "突破前高" in bullish:
-        entry="突破確認"
-    elif total>=85:
-        entry="可考慮進場"
-    elif total>=75 and pd.notna(last.MA20) and last.Close < last.MA20:
-        entry="等待拉回"
-    elif total>=60:
-        entry="等待拉回"
+    close=float(last.Close)
+    ma20=float(last.MA20) if pd.notna(last.MA20) else close
+    atr=float(last.ATR14) if pd.notna(last.ATR14) and float(last.ATR14)>0 else max(close*0.02, 0.01)
+    breakout=any(x in bullish for x in ["突破前高","布林突破"])
+    overheat=pd.notna(rsi) and rsi>=75
+    if total>=85 and not overheat:
+        signal="🟢 買進條件成立"; action="趨勢、籌碼與基本面同時偏多；以風險控管方式執行"
+    elif total>=75 and breakout and not overheat:
+        signal="🔵 突破確認"; action="突破型態成立，但應確認量能與停損位置"
+    elif total>=68:
+        signal="🟡 等待"; action="條件尚未完整，等待拉回支撐或突破確認"
     else:
-        entry="暫不考慮"
-    action=f"{entry}｜依目前技術、籌碼與基本面條件綜合判斷"
-    return {"分數":total,"訊號":signal,"動作":action,"理由":reasons[:8],"風險":risks[:8],"技術分":technical,"籌碼分":chip,"基本面分":fundamental,"進場狀態":entry}
+        signal="🔴 不買"; action="目前訊號偏弱，不以單一指標逆勢進場"
+    if overheat:
+        signal="🟠 不追高"; action="短線過熱，等待拉回或重新形成低風險進場點"
+    elif total<55:
+        signal="🔴 不買"; action="多項條件偏弱"
+    stop=max(0.01, close-1.5*atr)
+    target1=close+1.5*atr
+    target2=close+3.0*atr
+    rr=(target1-close)/(close-stop) if close>stop else np.nan
+    return {"分數":total,"訊號":signal,"動作":action,"理由":reasons[:8],"風險":risks[:8],"技術分":technical,"籌碼分":chip,"基本面分":fundamental,"ATR14":atr,"進場參考":close,"停損參考":stop,"目標1":target1,"目標2":target2,"風險報酬":rr,"突破確認":breakout}

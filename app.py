@@ -78,7 +78,7 @@ def _lots(v):
 
 def result_row(r):
     s=r["score"]; inst=r["institution"]
-    return {"代號":r["code"],"名稱":r["name"],"收盤":round(r["close"],2),"漲跌%":round(r["change_pct"],2),"法人買賣超(張)":_lots(inst.get("法人合計",np.nan)),"法人5日(張)":_lots(r["inst_stats"].get("5日",np.nan)),"法人20日(張)":_lots(r["inst_stats"].get("20日",np.nan)),"RSI":round(r["rsi"],1) if pd.notna(r["rsi"]) else np.nan,"雷達分數":s["分數"],"判斷":s["訊號"],"進場狀態":s.get("進場狀態","—"),"K線訊號":"、".join((r["bullish"][:3]+r["bearish"][:2]))}
+    return {"代號":r["code"],"名稱":r["name"],"收盤":round(r["close"],2),"漲跌%":round(r["change_pct"],2),"法人買賣超(張)":_lots(inst.get("法人合計",np.nan)),"法人5日(張)":_lots(r["inst_stats"].get("5日",np.nan)),"法人20日(張)":_lots(r["inst_stats"].get("20日",np.nan)),"RSI":round(r["rsi"],1) if pd.notna(r["rsi"]) else np.nan,"雷達分數":s["分數"],"判斷":s["訊號"],"動作":s["動作"],"進場參考":round(s["進場參考"],2),"停損":round(s["停損參考"],2),"目標1":round(s["目標1"],2),"目標2":round(s["目標2"],2),"風險報酬":round(s["風險報酬"],2) if pd.notna(s["風險報酬"]) else np.nan,"K線訊號":"、".join((r["bullish"][:3]+r["bearish"][:2]))}
 
 # ---------- Sidebar ----------
 with st.sidebar:
@@ -86,7 +86,7 @@ with st.sidebar:
     st.write("系統會先縮小候選池，再逐檔分析K線、量能、法人與營收，避免一次查詢全市場造成逾時。")
     universe=st.selectbox("候選股範圍",["成交金額前 50","成交金額前 100","成交金額前 200","全部市場（較慢）"])
     min_score=st.slider("最低雷達分數",40,90,65)
-    only_bull=st.checkbox("只顯示偏多/觀察",False)
+    only_bull=st.checkbox("只顯示偏多/再等等",False)
     max_scan=st.slider("最多實際分析檔數",20,200,80,step=10)
     st.divider()
     st.caption("⚠️ 分數是規則化研究工具，不是獲利保證，也不代表個人化投資建議。")
@@ -116,6 +116,25 @@ def get_core_data():
             st.session_state.get("inst_date"),
             st.session_state.get("rev_df",pd.DataFrame()))
 
+def load_performance_summary():
+    path = Path(__file__).resolve().parent / "performance_summary.json"
+    try:
+        if path.exists():
+            return json.loads(path.read_text(encoding="utf-8"))
+    except Exception:
+        pass
+    return {}
+
+def load_signal_history():
+    path = Path(__file__).resolve().parent / "signal_history.json"
+    try:
+        if path.exists():
+            data = json.loads(path.read_text(encoding="utf-8"))
+            return data if isinstance(data, list) else []
+    except Exception:
+        pass
+    return []
+
 def load_daily_radar_cache():
     """讀取 GitHub Actions 每日產生的雷達快取；失敗時完全不影響原本手動選股。"""
     path = Path(__file__).resolve().parent / "radar_cache.json"
@@ -142,12 +161,28 @@ with tab_auto:
     st.info(f"目前候選池：{pool_label}；本次最多深度分析 {limit} 檔。篩選會優先處理成交金額較大的股票。")
 
     # 每日自動更新：只讀 GitHub Actions 產生的快取，不改原本版面或手動分析流程。
+    perf = load_performance_summary()
+    st.markdown("### 📊 訊號實戰績效")
+    p1, p2, p3, p4 = st.columns(4)
+    d1, d5, d20 = perf.get("1日報酬%", {}), perf.get("5日報酬%", {}), perf.get("20日報酬%", {})
+    p1.metric("累計訊號", perf.get("total_signals", 0))
+    p2.metric("隔日正報酬", f"{d1.get('positive_rate'):.1f}%" if d1.get('positive_rate') is not None else "資料累積中")
+    p3.metric("5日正報酬", f"{d5.get('positive_rate'):.1f}%" if d5.get('positive_rate') is not None else "資料累積中")
+    p4.metric("5日平均報酬", f"{d5.get('avg_return'):+.2f}%" if d5.get('avg_return') is not None else "資料累積中")
+    sig_stats = perf.get("by_signal", {})
+    if sig_stats:
+        rows=[]
+        for sig, v in sig_stats.items():
+            rows.append({"訊號":sig,"訊號數":v.get("count",0),"已完成5日":v.get("5d_count",0),"5日正報酬率":v.get("5d_positive_rate"),"5日平均報酬":v.get("5d_avg_return")})
+        st.dataframe(pd.DataFrame(rows), width="stretch", hide_index=True)
+    st.caption("績效由每日收盤後自動記錄；1/5/20 日績效需等實際交易日經過後才會補齊。")
+
     if "auto_table" not in st.session_state:
         daily_df, daily_time = load_daily_radar_cache()
         if not daily_df.empty:
             show_df = daily_df.copy()
             if only_bull and "判斷" in show_df.columns:
-                show_df = show_df[show_df["判斷"].isin(["強勢買進", "偏多", "觀察"])]
+                show_df = show_df[show_df["判斷"].isin(["🟢 買進條件成立", "🔵 突破確認", "🟡 等待"])]
             if "雷達分數" in show_df.columns:
                 show_df = show_df[pd.to_numeric(show_df["雷達分數"], errors="coerce") >= min_score]
                 show_df = show_df.sort_values("雷達分數", ascending=False)
@@ -178,7 +213,7 @@ with tab_auto:
         rows=[result_row(r) for r in results]
         if rows:
             df=pd.DataFrame(rows).sort_values("雷達分數",ascending=False)
-            if only_bull: df=df[df["判斷"].isin(["強勢買進","偏多","觀察"])]
+            if only_bull: df=df[df["判斷"].isin(["可研究","再等等"])]
             df=df[df["雷達分數"]>=min_score]
             st.session_state["auto_results"]=results
             st.session_state["auto_table"]=df
@@ -189,7 +224,7 @@ with tab_auto:
         st.dataframe(df,width="stretch",hide_index=True)
         if not df.empty:
             st.markdown("### 自動選股解讀")
-            st.write("**強勢買進／偏多**＝多項條件偏多；**觀察**＝多空訊號混合；**偏空／弱勢**＝目前條件偏弱。進場狀態會另外提示可考慮進場、等待拉回、突破確認、不要追高或暫不考慮。")
+            st.write("**可研究**＝同時有較多技術/籌碼/基本面正向條件；**再等等**＝有訊號但缺確認；**偏弱**＝目前條件較弱。")
             st.caption("排序只是依照本工具的規則分數排序，不代表未來報酬排名。")
 
 with tab_search:
@@ -227,8 +262,8 @@ with tab_detail:
     else:
         code=st.selectbox("選擇股票",list(unique.keys()),format_func=lambda x:f"{x}｜{unique[x]['name']}")
         r=unique[code]; s=r["score"]
-        if s["訊號"] in ("強勢買進","偏多"): st.success(f"🟢 {s['訊號']}｜{s['動作']}")
-        elif s["訊號"]=="觀察": st.warning(f"🟡 {s['訊號']}｜{s['動作']}")
+        if s["訊號"]=="可研究": st.success(f"🟢 {s['訊號']}｜{s['動作']}")
+        elif s["訊號"]=="再等等": st.warning(f"🟡 {s['訊號']}｜{s['動作']}")
         else: st.error(f"🔴 {s['訊號']}｜{s['動作']}")
         a,b,c,d=st.columns(4); a.metric("雷達分數",s["分數"]); b.metric("收盤",f"{r['close']:.2f}"); c.metric("今日漲跌",f"{r['change_pct']:.2f}%"); d.metric("RSI",f"{r['rsi']:.1f}" if pd.notna(r['rsi']) else "—")
         st.plotly_chart(candle_chart(r),width="stretch")

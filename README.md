@@ -1,8 +1,9 @@
-# 台股雷達 PRO - final
+# 台股雷達 PRO
 
-1. Streamlit Main file path 設為 `app.py`
-2. 將整個資料夾內容放入 GitHub 專案根目錄
-3. `daily-radar.yml` 放在 `.github/workflows/`
-4. 首頁不自動掃描大量股票；輸入股票後才分析
-5. 法人歷史改為並行取得，避免逐檔重複 API
-6. `kline_engine.py` 已補上 `PATTERN_DESCRIPTIONS`
+Streamlit 台股研究工具。
+
+- `app.py`：主介面，保留原本自動雷達＋個股查詢排版
+- `daily_scan.py`：GitHub Actions 每日建立完整雷達快取
+- `kline_engine.py`：K線型態辨識引擎
+
+Streamlit Main file path：`app.py`

@@ -789,10 +789,12 @@ def cached_or_live_radar():
 # -----------------------------
 st.title('📈 台股雷達 PRO')
 st.caption('法人籌碼 × 營收 × 技術分析 × K線型態｜自動選股 + 個股查詢')
+
+# 先取得首頁資料，再使用 cache_is_full 顯示模式；避免啟動時 NameError。
+cache_df, cache_time, cache_is_full = cached_or_live_radar()
+
 if not cache_is_full:
     st.caption('⚡ 首頁快速模式：先用即時成交資料自動選股；完整法人／營收雷達由 GitHub Actions 產生快取後自動更新。')
-
-cache_df, cache_time, cache_is_full = cached_or_live_radar()
 
 st.subheader('🔥 今日自動雷達')
 

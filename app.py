@@ -10,10 +10,10 @@ import plotly.graph_objects as go
 from kline_engine import prepare, detect_patterns, bearish_patterns, score, PATTERN_DESCRIPTIONS
 from data_sources import stock_list_all, latest_institutional, institutional_summary, institutional_bulk_summary, revenue_table, revenue_for, financials_yfinance
 
-st.set_page_config(page_title="台股雷達 PRO｜自動選股", page_icon="📈", layout="wide")
+st.set_page_config(page_title="TW STOCK RADAR PRO", page_icon="📈", layout="wide")
 
-st.title("📈 台股雷達 PRO")
-st.caption("自動選股 × K線型態辨識 × 法人買賣超 × 營收 × 財報 × 技術雷達")
+st.title("📈 TW STOCK RADAR PRO")
+st.caption("Institutional Flow × Revenue × Technical Analysis × Candlestick Patterns｜Smart Stock Screening & Market Intelligence")
 
 # ---------- Data ----------
 @st.cache_data(ttl=1800, show_spinner=False)
@@ -72,9 +72,13 @@ def run_manual(codes,stocks,inst_map,rev_df):
         bar.progress((i+1)/len(codes))
     bar.empty(); return results
 
+def _lots(v):
+    """TWSE 法人原始資料為股；畫面統一顯示為張。"""
+    return v / 1000 if pd.notna(v) else np.nan
+
 def result_row(r):
     s=r["score"]; inst=r["institution"]
-    return {"代號":r["code"],"名稱":r["name"],"收盤":round(r["close"],2),"漲跌%":round(r["change_pct"],2),"法人買賣超(股)":inst.get("法人合計",np.nan),"法人5日(股)":r["inst_stats"].get("5日",np.nan),"法人20日(股)":r["inst_stats"].get("20日",np.nan),"RSI":round(r["rsi"],1) if pd.notna(r["rsi"]) else np.nan,"雷達分數":s["分數"],"判斷":s["訊號"],"K線訊號":"、".join((r["bullish"][:3]+r["bearish"][:2]))}
+    return {"代號":r["code"],"名稱":r["name"],"收盤":round(r["close"],2),"漲跌%":round(r["change_pct"],2),"法人買賣超(張)":_lots(inst.get("法人合計",np.nan)),"法人5日(張)":_lots(r["inst_stats"].get("5日",np.nan)),"法人20日(張)":_lots(r["inst_stats"].get("20日",np.nan)),"RSI":round(r["rsi"],1) if pd.notna(r["rsi"]) else np.nan,"雷達分數":s["分數"],"判斷":s["訊號"],"K線訊號":"、".join((r["bullish"][:3]+r["bearish"][:2]))}
 
 # ---------- Sidebar ----------
 with st.sidebar:
@@ -242,12 +246,16 @@ with tab_detail:
             st.write("風險："+("、".join(s["風險"]) if s["風險"] else "目前未偵測到主要風險"))
         st.subheader("法人買賣超")
         inst=r["institution"]; x,y,z,w=st.columns(4)
-        x.metric("外資",f"{inst.get('外資',np.nan):,.0f}" if pd.notna(inst.get('外資',np.nan)) else "—")
-        y.metric("投信",f"{inst.get('投信',np.nan):,.0f}" if pd.notna(inst.get('投信',np.nan)) else "—")
-        z.metric("自營商",f"{inst.get('自營商',np.nan):,.0f}" if pd.notna(inst.get('自營商',np.nan)) else "—")
-        w.metric("三大法人合計",f"{inst.get('法人合計',np.nan):,.0f}" if pd.notna(inst.get('法人合計',np.nan)) else "—")
-        hist=r["inst_stats"]["history"]
+        x.metric("外資",f"{_lots(inst.get('外資',np.nan)):,.1f} 張" if pd.notna(inst.get('外資',np.nan)) else "—")
+        y.metric("投信",f"{_lots(inst.get('投信',np.nan)):,.1f} 張" if pd.notna(inst.get('投信',np.nan)) else "—")
+        z.metric("自營商",f"{_lots(inst.get('自營商',np.nan)):,.1f} 張" if pd.notna(inst.get('自營商',np.nan)) else "—")
+        w.metric("三大法人合計",f"{_lots(inst.get('法人合計',np.nan)):,.1f} 張" if pd.notna(inst.get('法人合計',np.nan)) else "—")
+        hist=r["inst_stats"]["history"].copy()
         if not hist.empty:
+            for col in ["外資","投信","自營商","法人合計"]:
+                if col in hist.columns:
+                    hist[col]=hist[col].map(_lots)
+            hist=hist.rename(columns={"外資":"外資(張)","投信":"投信(張)","自營商":"自營商(張)","法人合計":"法人合計(張)"})
             st.dataframe(hist.sort_values("日期",ascending=False),width="stretch",hide_index=True)
         st.subheader("營收")
         st.dataframe(pd.DataFrame([r["revenue"]]),width="stretch",hide_index=True)

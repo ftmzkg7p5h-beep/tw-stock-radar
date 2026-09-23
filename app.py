@@ -11,7 +11,7 @@ from data_sources import stock_list_all, latest_institutional, institutional_sum
 st.set_page_config(page_title="台股雷達 PRO｜自動選股", page_icon="📈", layout="wide")
 
 st.title("📈 台股雷達 PRO")
-st.caption("自動選股 × K線自動辨識 × 法人買賣超 × 營收 × 財報 × 技術雷達")
+st.caption("自動選股 × K線型態辨識 × 法人買賣超 × 營收 × 財報 × 技術雷達")
 
 # ---------- Data ----------
 @st.cache_data(ttl=1800, show_spinner=False)
@@ -72,7 +72,7 @@ def run_manual(codes,stocks,inst_map,rev_df):
 
 def result_row(r):
     s=r["score"]; inst=r["institution"]
-    return {"代號":r["code"],"名稱":r["name"],"收盤":round(r["close"],2),"漲跌%":round(r["change_pct"],2),"法人買賣超(股)":inst.get("法人合計",np.nan),"法人5日(股)":r["inst_stats"].get("5日",np.nan),"法人20日(股)":r["inst_stats"].get("20日",np.nan),"RSI":round(r["rsi"],1) if pd.notna(r["rsi"]) else np.nan,"雷達分數":s["分數"],"判斷": {"可研究":"可以", "再等等":"再等等", "偏弱":"不可以"}.get(s["訊號"], s["訊號"]),"K線訊號":"、".join((r["bullish"][:3]+r["bearish"][:2])) or "無明顯型態"}
+    return {"代號":r["code"],"名稱":r["name"],"收盤":round(r["close"],2),"漲跌%":round(r["change_pct"],2),"法人買賣超(股)":inst.get("法人合計",np.nan),"法人5日(股)":r["inst_stats"].get("5日",np.nan),"法人20日(股)":r["inst_stats"].get("20日",np.nan),"RSI":round(r["rsi"],1) if pd.notna(r["rsi"]) else np.nan,"雷達分數":s["分數"],"判斷":s["訊號"],"K線訊號":"、".join((r["bullish"][:3]+r["bearish"][:2]))}
 
 # ---------- Sidebar ----------
 with st.sidebar:
@@ -93,10 +93,10 @@ if stocks.empty:
     st.stop()
 
 # ---------- Tabs ----------
-tab_auto,tab_search,tab_detail,tab_fin=st.tabs(["🚀 自動選股","🔎 個股查詢","📊 詳細分析","📑 財報/法人"])
+tab_auto,tab_search,tab_detail,tab_fin,tab_patterns=st.tabs(["🚀 自動選股","🔎 個股查詢","📊 詳細分析","📑 財報/法人","🕯️ K線型態庫"])
 
 with tab_auto:
-    st.subheader("🚀 全自動選股｜直接告訴你：可以 / 再等等 / 不可以")
+    st.subheader("🚀 全自動選股")
     st.markdown("**目標：不用先告訴系統股票代號，由系統自己從市場候選池找出符合條件的股票。**")
     nmap={"成交金額前 50":50,"成交金額前 100":100,"成交金額前 200":200,"全部市場（較慢）":len(stocks)}
     limit=min(nmap[universe],max_scan)
@@ -120,7 +120,7 @@ with tab_auto:
         rows=[result_row(r) for r in results]
         if rows:
             df=pd.DataFrame(rows).sort_values("雷達分數",ascending=False)
-            if only_bull: df=df[df["判斷"].isin(["可以","再等等"])]
+            if only_bull: df=df[df["判斷"].isin(["可研究","再等等"])]
             df=df[df["雷達分數"]>=min_score]
             st.session_state["auto_results"]=results
             st.session_state["auto_table"]=df
@@ -129,12 +129,10 @@ with tab_auto:
     if "auto_table" in st.session_state:
         df=st.session_state["auto_table"]
         st.dataframe(df,use_container_width=True,hide_index=True)
-        st.markdown("### 判斷規則")
-        st.write("🟢 **可以**：技術面、量能、法人/基本面綜合條件達標。\n🟡 **再等等**：有轉強訊號，但突破、量能或籌碼尚未確認。\n🔴 **不可以**：目前偏弱或風險訊號較多。")
         if not df.empty:
             st.markdown("### 自動選股解讀")
-            st.write("**可以**＝規則條件大致轉強；**再等等**＝有訊號但缺確認；**不可以**＝目前條件偏弱。")
-            st.caption("排序只代表本工具的規則分數；訊號不是獲利保證，仍需自行確認風險。")
+            st.write("**可研究**＝同時有較多技術/籌碼/基本面正向條件；**再等等**＝有訊號但缺確認；**偏弱**＝目前條件較弱。")
+            st.caption("排序只是依照本工具的規則分數排序，不代表未來報酬排名。")
 
 with tab_search:
     st.subheader("🔎 查詢指定個股")
@@ -165,10 +163,9 @@ with tab_detail:
     else:
         code=st.selectbox("選擇股票",list(unique.keys()),format_func=lambda x:f"{x}｜{unique[x]['name']}")
         r=unique[code]; s=r["score"]
-        display_signal={"可研究":"可以","再等等":"再等等","偏弱":"不可以"}.get(s["訊號"],s["訊號"])
-        if display_signal=="可以": st.success(f"🟢 {display_signal}｜{s['動作']}")
-        elif display_signal=="再等等": st.warning(f"🟡 {display_signal}｜{s['動作']}")
-        else: st.error(f"🔴 {display_signal}｜{s['動作']}")
+        if s["訊號"]=="可研究": st.success(f"🟢 {s['訊號']}｜{s['動作']}")
+        elif s["訊號"]=="再等等": st.warning(f"🟡 {s['訊號']}｜{s['動作']}")
+        else: st.error(f"🔴 {s['訊號']}｜{s['動作']}")
         a,b,c,d=st.columns(4); a.metric("雷達分數",s["分數"]); b.metric("收盤",f"{r['close']:.2f}"); c.metric("今日漲跌",f"{r['change_pct']:.2f}%"); d.metric("RSI",f"{r['rsi']:.1f}" if pd.notna(r['rsi']) else "—")
         st.plotly_chart(candle_chart(r),use_container_width=True)
         l,rr=st.columns(2)
@@ -211,3 +208,18 @@ with tab_fin:
         if fin.empty: st.warning("目前抓不到財報資料，可能是資料源暫時沒有回應。")
         else: st.dataframe(fin,use_container_width=True)
         st.caption(f"法人最近可用日期：{inst_date or '未取得'}；股數正值＝買超，負值＝賣超。")
+
+with tab_patterns:
+    st.subheader("🕯️ K線型態庫")
+    st.write("系統會把下列型態轉成規則，並在個股分析時自動標記。圖像為你提供的參考圖庫；真正判斷以OHLC數據規則為準。")
+    assets=[]
+    import os
+    for f in sorted(os.listdir("assets/patterns")):
+        if f.lower().endswith((".png",".jpg",".jpeg")): assets.append(f)
+    if assets:
+        cols=st.columns(3)
+        for i,f in enumerate(assets): cols[i%3].image("assets/patterns/"+f,use_container_width=True,caption=f)
+    st.markdown("### 已納入自動判斷的型態")
+    st.dataframe(pd.DataFrame([{"型態":k,"系統解讀":v} for k,v in PATTERN_DESCRIPTIONS.items()]),use_container_width=True,hide_index=True)
+
+st.sidebar.caption(f"法人資料最近可用日：{inst_date or '—'}")

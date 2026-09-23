@@ -23,7 +23,7 @@ CACHE_FILE = BASE / 'radar_cache.json'
 ASSETS_DIR = BASE / 'assets'
 UA = {'User-Agent': 'Mozilla/5.0'}
 
-def http_json(url, params=None, timeout=15):
+def http_json(url, params=None, timeout=8):
     try:
         r = requests.get(url, params=params, headers=UA, timeout=timeout)
         r.raise_for_status()
@@ -250,7 +250,8 @@ def price_history(code, days=260):
                 period='2y',
                 interval='1d',
                 auto_adjust=False,
-                progress=False
+                progress=False,
+                timeout=10
             )
 
             if isinstance(df, pd.DataFrame) and not df.empty:
@@ -786,18 +787,17 @@ def market_only_radar():
     ].sort_values("score", ascending=False).head(30).reset_index(drop=True)
 
 def cached_or_live_radar():
+    """首頁啟動時只讀快取；沒有快取就用單次市場資料做輕量 fallback。
+
+    絕對不要在 Streamlit 啟動階段執行 live_radar()：
+    live_radar 會對多檔股票逐檔抓法人歷史與營收，會讓首頁長時間停在 Loading。
+    """
     c = load_cache()
 
     if isinstance(c, dict) and c.get('results'):
         return pd.DataFrame(c['results']), c.get('generated_at', '')
 
-    live = live_radar()
-
-    if not live.empty:
-        return live, datetime.now().strftime('%Y-%m-%d %H:%M')
-
     fallback = market_only_radar()
-
     return (
         fallback,
         datetime.now().strftime('%Y-%m-%d %H:%M')
@@ -809,6 +809,7 @@ def cached_or_live_radar():
 # -----------------------------
 st.title('📈 台股雷達 PRO')
 st.caption('法人籌碼 × 營收 × 技術分析 × K線型態｜自動選股 + 個股查詢')
+st.caption('🚀 首頁啟動模式：快取優先，不在開頁時掃描大量 API')
 
 cache_df, cache_time = cached_or_live_radar()
 
@@ -892,6 +893,8 @@ if not cache_df.empty:
 else:
     st.warning('目前即時雷達暫時沒有取得資料；請稍後重新整理。')
 
+st.caption('⚡ 首頁啟動不會自動掃描 20 檔股票；完整雷達建議由 GitHub Actions 產生 radar_cache.json，避免網站開啟時卡住。')
+
 st.divider()
 st.subheader('🔎 個股查詢')
 
@@ -939,12 +942,16 @@ if query.strip():
     else:
         inst_all = institutional_latest()
 
-        for r in selected:
+        progress = st.progress(0, text='準備取得個股資料…')
+        total_selected = len(selected)
+
+        for idx, r in enumerate(selected):
             code, name = r['code'], r['name']
+            progress.progress(idx / max(total_selected, 1), text=f'正在分析 {code} {name}…')
 
             p = price_history(code, 260)
             h = institutional_history(code, 20)
-            rv = revenue_history(code, 60)
+            rv = revenue_history(code, 24)
 
             if p.empty:
                 st.warning(f'{code} {name}：價格資料暫時無法取得。')
@@ -1108,6 +1115,9 @@ if query.strip():
                     'EPS、毛利率、營益率、ROE、現金流尚未取得經驗證的官方欄位，'
                     '因此不參與多空加分，避免把缺資料當成 0。'
                 )
+
+        progress.progress(1.0, text='分析完成')
+        progress.empty()
 
 st.divider()
 

@@ -5,298 +5,209 @@ import streamlit as st
 import yfinance as yf
 import plotly.graph_objects as go
 
-from kline_engine import prepare, detect_patterns, bearish_patterns, score
-from data_sources import (
-    twse_stock_list, latest_institutional, institutional_summary,
-    revenue_table, revenue_for
-)
+from kline_engine import prepare, detect_patterns, bearish_patterns, score, PATTERN_DESCRIPTIONS
+from data_sources import stock_list_all, latest_institutional, institutional_summary, institutional_bulk_summary, revenue_table, revenue_for, financials_yfinance
 
-st.set_page_config(page_title="台股雷達 PRO V1", page_icon="📈", layout="wide")
+st.set_page_config(page_title="台股雷達 PRO｜自動選股", page_icon="📈", layout="wide")
 
-st.title("📈 台股雷達 PRO V1")
-st.caption("從零建立｜K線自動辨識 × 法人 × 營收 × 技術雷達")
+st.title("📈 台股雷達 PRO")
+st.caption("自動選股 × K線自動辨識 × 法人買賣超 × 營收 × 財報 × 技術雷達")
 
-@st.cache_data(ttl=1800)
-def price_history(code):
+# ---------- Data ----------
+@st.cache_data(ttl=1800, show_spinner=False)
+def price_history(code, period="1y"):
     for suffix in [".TW", ".TWO"]:
         try:
-            t = yf.Ticker(f"{code}{suffix}")
-            d = t.history(period="1y", interval="1d", auto_adjust=False)
+            d=yf.Ticker(f"{code}{suffix}").history(period=period,interval="1d",auto_adjust=False)
             if not d.empty:
-                if isinstance(d.columns, pd.MultiIndex):
-                    d.columns = d.columns.get_level_values(0)
+                if isinstance(d.columns,pd.MultiIndex): d.columns=d.columns.get_level_values(0)
                 return d.dropna()
-        except Exception:
-            pass
+        except Exception: pass
     return pd.DataFrame()
 
-@st.cache_data(ttl=3600)
-def stock_list_cached():
-    return twse_stock_list()
+@st.cache_data(ttl=3600, show_spinner=False)
+def stocks_cached(): return stock_list_all()
+@st.cache_data(ttl=1800, show_spinner=False)
+def inst_cached(): return latest_institutional()
+@st.cache_data(ttl=3600, show_spinner=False)
+def revenue_cached(): return revenue_table()
 
-@st.cache_data(ttl=1800)
-def institutional_cached():
-    return latest_institutional()
-
-@st.cache_data(ttl=3600)
-def revenue_cached():
-    return revenue_table()
-
-def parse_tokens(text):
-    return [x.strip() for x in re.split(r"[\s,，、;；]+", text or "") if x.strip()]
 
 def num(v):
     try:
-        s = str(v).replace(",", "").replace("%", "").strip()
-        if s in ("", "-", "--", "nan", "None"):
-            return np.nan
+        s=str(v).replace(",","").replace("%","").strip()
+        if s in ("","-","--","nan","None"): return np.nan
         return float(s)
-    except Exception:
-        return np.nan
+    except Exception: return np.nan
 
-def analyze(code, name, inst_map, rev_df):
-    raw = price_history(code)
-    if raw.empty or len(raw) < 60:
-        return None
+def analyze(code,name,inst_map,rev_df,inst_stats_override=None):
+    raw=price_history(code)
+    if raw.empty or len(raw)<60: return None
+    d=prepare(raw); bull=detect_patterns(d); bear=bearish_patterns(d)
+    inst=inst_map.get(code,{})
+    insts=inst_stats_override if inst_stats_override is not None else institutional_summary(code)
+    rev=revenue_for(code,rev_df)
+    s=score(d,bull,bear,inst.get("法人合計",np.nan),insts.get("5日",np.nan),insts.get("20日",np.nan),num(rev.get("YoY")))
+    last=d.iloc[-1]
+    return {"code":code,"name":name,"data":d,"close":float(last.Close),"change_pct":float((last.Close/d.Close.iloc[-2]-1)*100),"volume":float(last.Volume),"rsi":float(last.RSI) if pd.notna(last.RSI) else np.nan,"macd":float(last.MACD) if pd.notna(last.MACD) else np.nan,"bullish":bull,"bearish":bear,"institution":inst,"inst_stats":insts,"revenue":rev,"score":s}
 
-    d = prepare(raw)
-    bullish = detect_patterns(d)
-    bearish = bearish_patterns(d)
-
-    inst = inst_map.get(code, {})
-    inst_stats = institutional_summary(code)
-    rev = revenue_for(code, rev_df)
-
-    revenue_yoy = num(rev["YoY"])
-    result = score(
-        d, bullish, bearish,
-        institution_total=inst.get("法人合計", np.nan),
-        institution_5d=inst_stats.get("5日", np.nan),
-        revenue_yoy=revenue_yoy,
-    )
-
-    last = d.iloc[-1]
-    return {
-        "code": code,
-        "name": name,
-        "data": d,
-        "close": float(last.Close),
-        "change_pct": float((last.Close / d.Close.iloc[-2] - 1) * 100),
-        "volume": float(last.Volume),
-        "rsi": float(last.RSI) if pd.notna(last.RSI) else np.nan,
-        "macd": float(last.MACD) if pd.notna(last.MACD) else np.nan,
-        "bullish": bullish,
-        "bearish": bearish,
-        "institution": inst,
-        "inst_stats": inst_stats,
-        "revenue": rev,
-        "score": result,
-    }
-
-def candle_chart(result):
-    d = result["data"].tail(120).copy()
-    fig = go.Figure()
-    fig.add_trace(go.Candlestick(
-        x=d.index, open=d.Open, high=d.High, low=d.Low, close=d.Close,
-        name="K線"
-    ))
-    for n in [5, 20, 60]:
-        if f"MA{n}" in d:
-            fig.add_trace(go.Scatter(
-                x=d.index, y=d[f"MA{n}"], mode="lines", name=f"MA{n}"
-            ))
-
-    # 在最後一天顯示型態標籤
-    labels = result["bullish"][:4] + result["bearish"][:2]
-    if labels:
-        y = float(d.High.iloc[-1]) * 1.03
-        fig.add_annotation(
-            x=d.index[-1], y=y, text="、".join(labels),
-            showarrow=True, arrowhead=2
-        )
-
-    fig.update_layout(
-        height=600,
-        xaxis_rangeslider_visible=False,
-        margin=dict(l=20, r=20, t=40, b=20)
-    )
+def candle_chart(r):
+    d=r["data"].tail(160)
+    fig=go.Figure()
+    fig.add_trace(go.Candlestick(x=d.index,open=d.Open,high=d.High,low=d.Low,close=d.Close,name="K線"))
+    for n in [5,20,60]: fig.add_trace(go.Scatter(x=d.index,y=d[f"MA{n}"],mode="lines",name=f"MA{n}"))
+    fig.update_layout(height=620,xaxis_rangeslider_visible=False,margin=dict(l=20,r=20,t=40,b=20))
     return fig
 
-# ---------- 輸入 ----------
-st.subheader("① 輸入股票")
-query = st.text_area(
-    "股票代號 / 名稱",
-    placeholder="例如：2330\n2317\n2454\n或 2330,2317,2454",
-    height=100
-)
+def parse_tokens(text): return [x.strip() for x in re.split(r"[\s,，、;；]+",text or "") if x.strip()]
 
-c1, c2 = st.columns([1, 1])
-with c1:
-    run = st.button("🔍 開始分析", type="primary", use_container_width=True)
-with c2:
-    clear = st.button("🧹 清除快取", use_container_width=True)
+def run_manual(codes,stocks,inst_map,rev_df):
+    names=dict(zip(stocks["代號"],stocks["名稱"])) if not stocks.empty else {}
+    results=[]; bar=st.progress(0)
+    for i,code in enumerate(codes):
+        r=analyze(code,names.get(code,""),inst_map,rev_df)
+        if r: results.append(r)
+        bar.progress((i+1)/len(codes))
+    bar.empty(); return results
 
-if clear:
-    st.cache_data.clear()
-    st.rerun()
+def result_row(r):
+    s=r["score"]; inst=r["institution"]
+    return {"代號":r["code"],"名稱":r["name"],"收盤":round(r["close"],2),"漲跌%":round(r["change_pct"],2),"法人買賣超(股)":inst.get("法人合計",np.nan),"法人5日(股)":r["inst_stats"].get("5日",np.nan),"法人20日(股)":r["inst_stats"].get("20日",np.nan),"RSI":round(r["rsi"],1) if pd.notna(r["rsi"]) else np.nan,"雷達分數":s["分數"],"判斷": {"可研究":"可以", "再等等":"再等等", "偏弱":"不可以"}.get(s["訊號"], s["訊號"]),"K線訊號":"、".join((r["bullish"][:3]+r["bearish"][:2])) or "無明顯型態"}
 
-if not run:
-    st.info("""
-### 使用方式
-1. 輸入股票代號，例如 `2330`
-2. 按「開始分析」
-3. 系統自動抓 K 線、法人、營收
-4. 自動辨識 K 線型態
-5. 給出「偏多研究 / 再等等 / 偏弱研究」
-6. 點個股查看完整原因
+# ---------- Sidebar ----------
+with st.sidebar:
+    st.header("⚙️ 選股設定")
+    st.write("系統會先縮小候選池，再逐檔分析K線、量能、法人與營收，避免一次查詢全市場造成逾時。")
+    universe=st.selectbox("候選股範圍",["成交金額前 50","成交金額前 100","成交金額前 200","全部市場（較慢）"])
+    min_score=st.slider("最低雷達分數",40,90,65)
+    only_bull=st.checkbox("只顯示偏多/再等等",False)
+    max_scan=st.slider("最多實際分析檔數",20,200,80,step=10)
+    st.divider()
+    st.caption("⚠️ 分數是規則化研究工具，不是獲利保證，也不代表個人化投資建議。")
 
-**這個版本是全新專案，不需要昨天任何程式。**
-""")
+stocks=stocks_cached()
+inst_map,inst_date=inst_cached()
+rev_df=revenue_cached()
+if stocks.empty:
+    st.error("目前抓不到台股清單，請稍後重新整理。")
     st.stop()
 
-# ---------- 資料 ----------
-with st.spinner("載入股票清單與資料…"):
-    stocks = stock_list_cached()
-    inst_map, inst_date = institutional_cached()
-    rev_df = revenue_cached()
+# ---------- Tabs ----------
+tab_auto,tab_search,tab_detail,tab_fin=st.tabs(["🚀 自動選股","🔎 個股查詢","📊 詳細分析","📑 財報/法人"])
 
-code_to_name = dict(zip(stocks["代號"], stocks["名稱"])) if not stocks.empty else {}
-name_to_code = {v: k for k, v in code_to_name.items()}
+with tab_auto:
+    st.subheader("🚀 全自動選股｜直接告訴你：可以 / 再等等 / 不可以")
+    st.markdown("**目標：不用先告訴系統股票代號，由系統自己從市場候選池找出符合條件的股票。**")
+    nmap={"成交金額前 50":50,"成交金額前 100":100,"成交金額前 200":200,"全部市場（較慢）":len(stocks)}
+    limit=min(nmap[universe],max_scan)
+    st.info(f"目前候選池：{nmap[universe]} 檔；本次最多深度分析 {limit} 檔。篩選會優先處理成交金額較大的股票。")
+    if st.button("🚀 開始全市場自動選股",type="primary",use_container_width=True):
+        pool=stocks.copy()
+        if "成交金額" in pool.columns: pool=pool.sort_values("成交金額",ascending=False,na_position="last")
+        pool=pool.head(limit)
+        codes=pool["代號"].astype(str).tolist()
+        with st.spinner("正在掃描市場：K線、均線、量能、法人、營收…"):
+            # 法人先一次抓最近幾個交易日，避免每檔股票重複打API。
+            bulk_inst=institutional_bulk_summary(codes, days=5)
+            names=dict(zip(stocks["代號"],stocks["名稱"]))
+            results=[]
+            bar=st.progress(0)
+            for i,code in enumerate(codes):
+                r=analyze(code,names.get(code,""),inst_map,rev_df,bulk_inst.get(code))
+                if r: results.append(r)
+                bar.progress((i+1)/len(codes))
+            bar.empty()
+        rows=[result_row(r) for r in results]
+        if rows:
+            df=pd.DataFrame(rows).sort_values("雷達分數",ascending=False)
+            if only_bull: df=df[df["判斷"].isin(["可以","再等等"])]
+            df=df[df["雷達分數"]>=min_score]
+            st.session_state["auto_results"]=results
+            st.session_state["auto_table"]=df
+            st.success(f"掃描完成：成功分析 {len(results)} 檔，符合目前分數條件 {len(df)} 檔。")
+        else: st.error("沒有取得足夠資料，請稍後再試。")
+    if "auto_table" in st.session_state:
+        df=st.session_state["auto_table"]
+        st.dataframe(df,use_container_width=True,hide_index=True)
+        st.markdown("### 判斷規則")
+        st.write("🟢 **可以**：技術面、量能、法人/基本面綜合條件達標。\n🟡 **再等等**：有轉強訊號，但突破、量能或籌碼尚未確認。\n🔴 **不可以**：目前偏弱或風險訊號較多。")
+        if not df.empty:
+            st.markdown("### 自動選股解讀")
+            st.write("**可以**＝規則條件大致轉強；**再等等**＝有訊號但缺確認；**不可以**＝目前條件偏弱。")
+            st.caption("排序只代表本工具的規則分數；訊號不是獲利保證，仍需自行確認風險。")
 
-tokens = parse_tokens(query)
-codes = []
-unresolved = []
+with tab_search:
+    st.subheader("🔎 查詢指定個股")
+    q=st.text_area("輸入代號或名稱（可一次多檔）",placeholder="2330\n2317\n2454",height=90)
+    if st.button("🔍 分析指定股票",use_container_width=True):
+        code_to_name=dict(zip(stocks["代號"],stocks["名稱"]))
+        name_to_code={v:k for k,v in code_to_name.items()}
+        codes=[]
+        for t in parse_tokens(q):
+            if t in code_to_name: codes.append(t)
+            elif t in name_to_code: codes.append(name_to_code[t])
+            elif t.isdigit(): codes.append(t)
+            else:
+                m=[c for c,n in code_to_name.items() if t in n]
+                if m: codes.append(m[0])
+        codes=list(dict.fromkeys(codes))
+        if not codes: st.error("找不到有效股票。")
+        else: st.session_state["manual_results"]=run_manual(codes,stocks,inst_map,rev_df)
+    if st.session_state.get("manual_results"):
+        st.dataframe(pd.DataFrame([result_row(r) for r in st.session_state["manual_results"]]),use_container_width=True,hide_index=True)
 
-for token in tokens:
-    if token in code_to_name:
-        codes.append(token)
-    elif token in name_to_code:
-        codes.append(name_to_code[token])
+with tab_detail:
+    all_results=st.session_state.get("manual_results",[])+st.session_state.get("auto_results",[])
+    # dedupe
+    unique={r["code"]:r for r in all_results}
+    if not unique:
+        st.info("先到「自動選股」或「個股查詢」分析股票。")
     else:
-        matches = [c for c, n in code_to_name.items() if token in n]
-        if matches:
-            codes.append(matches[0])
-        elif token.isdigit():
-            codes.append(token)
-        else:
-            unresolved.append(token)
+        code=st.selectbox("選擇股票",list(unique.keys()),format_func=lambda x:f"{x}｜{unique[x]['name']}")
+        r=unique[code]; s=r["score"]
+        display_signal={"可研究":"可以","再等等":"再等等","偏弱":"不可以"}.get(s["訊號"],s["訊號"])
+        if display_signal=="可以": st.success(f"🟢 {display_signal}｜{s['動作']}")
+        elif display_signal=="再等等": st.warning(f"🟡 {display_signal}｜{s['動作']}")
+        else: st.error(f"🔴 {display_signal}｜{s['動作']}")
+        a,b,c,d=st.columns(4); a.metric("雷達分數",s["分數"]); b.metric("收盤",f"{r['close']:.2f}"); c.metric("今日漲跌",f"{r['change_pct']:.2f}%"); d.metric("RSI",f"{r['rsi']:.1f}" if pd.notna(r['rsi']) else "—")
+        st.plotly_chart(candle_chart(r),use_container_width=True)
+        l,rr=st.columns(2)
+        with l:
+            st.markdown("### 🕯️ 自動辨識")
+            st.write("**偏多/反轉：** "+("、".join(r["bullish"]) if r["bullish"] else "無"))
+            st.write("**偏空：** "+("、".join(r["bearish"]) if r["bearish"] else "無"))
+            st.write("**解釋：**")
+            for p in (r["bullish"]+r["bearish"])[:10]: st.write(f"- **{p}**：{PATTERN_DESCRIPTIONS.get(p,'依規則偵測')}")
+        with rr:
+            st.markdown("### 🧠 判斷依據")
+            st.write(f"技術分：**{s['技術分']}**｜籌碼分：**{s['籌碼分']}**｜基本面分：**{s['基本面分']}**")
+            st.write("主要原因："+("、".join(s["理由"]) if s["理由"] else "條件不足"))
+            st.write("風險："+("、".join(s["風險"]) if s["風險"] else "目前未偵測到主要風險"))
+        st.subheader("法人買賣超")
+        inst=r["institution"]; x,y,z,w=st.columns(4)
+        x.metric("外資",f"{inst.get('外資',np.nan):,.0f}" if pd.notna(inst.get('外資',np.nan)) else "—")
+        y.metric("投信",f"{inst.get('投信',np.nan):,.0f}" if pd.notna(inst.get('投信',np.nan)) else "—")
+        z.metric("自營商",f"{inst.get('自營商',np.nan):,.0f}" if pd.notna(inst.get('自營商',np.nan)) else "—")
+        w.metric("三大法人合計",f"{inst.get('法人合計',np.nan):,.0f}" if pd.notna(inst.get('法人合計',np.nan)) else "—")
+        hist=r["inst_stats"]["history"]
+        if not hist.empty:
+            st.dataframe(hist.sort_values("日期",ascending=False),use_container_width=True,hide_index=True)
+        st.subheader("營收")
+        st.dataframe(pd.DataFrame([r["revenue"]]),use_container_width=True,hide_index=True)
 
-codes = list(dict.fromkeys(codes))
-
-if unresolved:
-    st.warning("找不到：" + "、".join(unresolved))
-if not codes:
-    st.error("請輸入有效股票代號或名稱。")
-    st.stop()
-
-# ---------- 分析 ----------
-results = []
-progress = st.progress(0)
-
-for i, code in enumerate(codes):
-    result = analyze(code, code_to_name.get(code, ""), inst_map, rev_df)
-    if result:
-        results.append(result)
-    progress.progress((i + 1) / len(codes))
-
-progress.empty()
-
-if not results:
-    st.error("目前沒有取得足夠的歷史資料。請確認股票代號或稍後再試。")
-    st.stop()
-
-# ---------- 摘要 ----------
-rows = []
-for r in results:
-    s = r["score"]
-    inst = r["institution"]
-    rows.append({
-        "代號": r["code"],
-        "名稱": r["name"],
-        "收盤": round(r["close"], 2),
-        "漲跌%": round(r["change_pct"], 2),
-        "法人合計": inst.get("法人合計", np.nan),
-        "法人5日": r["inst_stats"].get("5日", np.nan),
-        "RSI": round(r["rsi"], 1) if pd.notna(r["rsi"]) else np.nan,
-        "分數": s["分數"],
-        "訊號": s["訊號"],
-        "主要K線": "、".join(r["bullish"][:4]) if r["bullish"] else "—",
-    })
-
-summary = pd.DataFrame(rows).sort_values("分數", ascending=False)
-
-st.subheader("② 自動選股結果")
-st.dataframe(summary, use_container_width=True, hide_index=True)
-
-st.subheader("③ 個股詳細分析")
-selected = st.selectbox(
-    "選擇股票",
-    [r["code"] for r in results],
-    format_func=lambda x: f"{x}｜{code_to_name.get(x, '')}"
-)
-r = next(x for x in results if x["code"] == selected)
-s = r["score"]
-
-if s["訊號"] == "偏多研究":
-    st.success(f"🟢 {s['訊號']}｜{s['動作']}")
-elif s["訊號"] == "再等等":
-    st.warning(f"🟡 {s['訊號']}｜{s['動作']}")
-else:
-    st.error(f"🔴 {s['訊號']}｜{s['動作']}")
-
-a,b,c,d = st.columns(4)
-a.metric("雷達分數", s["分數"])
-b.metric("收盤", f"{r['close']:.2f}")
-c.metric("今日漲跌", f"{r['change_pct']:.2f}%")
-d.metric("RSI", f"{r['rsi']:.1f}" if pd.notna(r["rsi"]) else "—")
-
-st.plotly_chart(candle_chart(r), use_container_width=True)
-
-left, right = st.columns(2)
-
-with left:
-    st.markdown("### 🕯️ K線辨識")
-    st.write("**偏多/反轉型態**")
-    st.write("、".join(r["bullish"]) if r["bullish"] else "目前沒有符合的型態")
-    st.write("**偏空型態**")
-    st.write("、".join(r["bearish"]) if r["bearish"] else "目前沒有明顯偏空型態")
-
-with right:
-    st.markdown("### 🧠 系統判斷")
-    st.write(f"**技術分：** {s['技術分']}")
-    st.write(f"**籌碼分：** {s['籌碼分']}")
-    st.write(f"**基本面分：** {s['基本面分']}")
-    st.write("**主要原因：** " + ("、".join(s["理由"]) if s["理由"] else "條件不足"))
-    st.write("**風險：** " + ("、".join(s["風險"]) if s["風險"] else "目前未偵測到主要風險訊號"))
-
-st.markdown("---")
-st.subheader("④ 法人")
-
-inst = r["institution"]
-x,y,z,w = st.columns(4)
-x.metric("外資", f"{inst.get('外資', np.nan):,.0f}" if pd.notna(inst.get("外資", np.nan)) else "—")
-y.metric("投信", f"{inst.get('投信', np.nan):,.0f}" if pd.notna(inst.get("投信", np.nan)) else "—")
-z.metric("自營商", f"{inst.get('自營商', np.nan):,.0f}" if pd.notna(inst.get("自營商", np.nan)) else "—")
-w.metric("三大法人", f"{inst.get('法人合計', np.nan):,.0f}" if pd.notna(inst.get("法人合計", np.nan)) else "—")
-
-x,y,z = st.columns(3)
-x.metric("法人連買", f"{r['inst_stats']['連買']} 天")
-y.metric("法人連賣", f"{r['inst_stats']['連賣']} 天")
-z.metric("法人20日", f"{r['inst_stats']['20日']:,.0f}" if pd.notna(r["inst_stats"]["20日"]) else "—")
-
-hist = r["inst_stats"]["history"]
-if not hist.empty:
-    st.dataframe(hist.sort_values("日期", ascending=False), use_container_width=True, hide_index=True)
-
-st.markdown("---")
-st.subheader("⑤ 營收")
-rev = r["revenue"]
-st.write(f"當月營收：{rev['營收']}")
-st.write(f"YoY：{rev['YoY']}")
-st.write(f"MoM：{rev['MoM']}")
-st.write(f"累計營收：{rev['累計']}")
-
-st.caption(
-    f"法人資料最近可用日期：{inst_date or '未取得'}。"
-    "訊號是規則化研究結果，不代表保證上漲，也不應單獨作為交易決策。"
-)
+with tab_fin:
+    st.subheader("📑 財報 / 法人")
+    codes=[r["code"] for r in (st.session_state.get("manual_results",[])+st.session_state.get("auto_results",[]))]
+    codes=list(dict.fromkeys(codes))
+    if not codes: st.info("先分析至少一檔股票，再查看財報。")
+    else:
+        c=st.selectbox("選擇股票",codes,key="fin_code",format_func=lambda x:f"{x}｜{dict(zip(stocks['代號'],stocks['名稱'])).get(x,'')}")
+        ticker=f"{c}.TW"
+        st.write("### 法人最近交易日")
+        inst=next((r["institution"] for r in st.session_state.get("manual_results",[])+st.session_state.get("auto_results",[]) if r["code"]==c),{})
+        st.dataframe(pd.DataFrame([inst]),use_container_width=True,hide_index=True)
+        st.write("### 財務報表（公開資料，來源依 yfinance 可取得內容）")
+        fin=financials_yfinance(ticker)
+        if fin.empty: st.warning("目前抓不到財報資料，可能是資料源暫時沒有回應。")
+        else: st.dataframe(fin,use_container_width=True)
+        st.caption(f"法人最近可用日期：{inst_date or '未取得'}；股數正值＝買超，負值＝賣超。")

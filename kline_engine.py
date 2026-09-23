@@ -160,8 +160,26 @@ def score(d,bullish,bearish,institution_total=np.nan,institution_5d=np.nan,insti
     fundamental=0
     if pd.notna(revenue_yoy): fundamental += 6 if revenue_yoy>10 else 3 if revenue_yoy>0 else -5
     total=int(np.clip(50+technical+chip+fundamental,0,100))
-    if total>=78 and not(pd.notna(rsi) and rsi>=75): signal="可研究"; action="多項條件同時轉強，可列入觀察/研究名單"
-    elif total>=60: signal="再等等"; action="有部分訊號，但仍需要價格、量能或法人確認"
-    else: signal="偏弱"; action="目前多項條件偏弱，避免只因單一K線追價"
-    if pd.notna(rsi) and rsi>=75: signal="再等等"; action="短線偏熱，等待拉回或再次確認突破"
-    return {"分數":total,"訊號":signal,"動作":action,"理由":reasons[:8],"風險":risks[:8],"技術分":technical,"籌碼分":chip,"基本面分":fundamental}
+    # 五級多空判斷 + 進場狀態
+    if total>=85 and not(pd.notna(rsi) and rsi>=75): signal="強勢買進"
+    elif total>=75: signal="偏多"
+    elif total>=60: signal="觀察"
+    elif total>=45: signal="偏空"
+    else: signal="弱勢"
+
+    if total < 45:
+        entry="暫不考慮"
+    elif pd.notna(rsi) and rsi>=75:
+        entry="不要追高"
+    elif total>=75 and "突破前高" in bullish:
+        entry="突破確認"
+    elif total>=85:
+        entry="可考慮進場"
+    elif total>=75 and pd.notna(last.MA20) and last.Close < last.MA20:
+        entry="等待拉回"
+    elif total>=60:
+        entry="等待拉回"
+    else:
+        entry="暫不考慮"
+    action=f"{entry}｜依目前技術、籌碼與基本面條件綜合判斷"
+    return {"分數":total,"訊號":signal,"動作":action,"理由":reasons[:8],"風險":risks[:8],"技術分":technical,"籌碼分":chip,"基本面分":fundamental,"進場狀態":entry}

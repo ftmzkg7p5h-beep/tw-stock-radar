@@ -1,27 +1,17 @@
-"""
-台股雷達 PRO V18 - K線型態辨識引擎
-
-目的：把使用者提供的 K 線圖卡轉成可重複執行的 OHLCV 規則。
-注意：型態是研究訊號，不是獲利保證；複合型態採近似規則，避免把主觀圖形硬說成精準數學定義。
-"""
-from __future__ import annotations
-
-from dataclasses import dataclass
-from typing import Dict, List, Tuple
 import numpy as np
 import pandas as pd
 
-
-@dataclass
-class Pattern:
-    name: str
-    group: str
-    bullish: int  # -1 bearish, 0 neutral, +1 bullish
-    weight: int
-    note: str
-
-
 PATTERN_DESCRIPTIONS = {
+    "十字星": "實體很小，多空暫時僵持，單獨出現不代表一定反轉。",
+    "小陽線": "小幅收紅，買方略占優勢。",
+    "小陰線": "小幅收黑，賣方略占優勢。",
+    "錘頭／錘子線": "下影較長，若出現在下跌後並獲量價確認，可能代表支撐。",
+    "倒錘子線": "上影較長，若出現在下跌後需等待隔日確認。",
+    "光頭大陽線": "實體長且上下影短，單日買盤強。",
+    "光頭大陰線": "實體長且上下影短，單日賣壓強。",
+    "紅三兵": "連續收紅且逐步墊高，屬多方延續型態。",
+    "早晨之星": "下跌後的三K反轉型態，仍需量價確認。",
+    "反攻": "空方後出現強勢紅K收復部分跌幅。",
     "曙光出現": "下跌後紅K深入前一根黑K實體，偏反轉訊號。",
     "雙針探底": "連續出現明顯下影，代表低檔承接。",
     "多頭吞噬": "紅K實體覆蓋前一根黑K，偏多反轉訊號。",
@@ -45,341 +35,133 @@ PATTERN_DESCRIPTIONS = {
 }
 
 
-def _safe(v, default=np.nan):
-    try:
-        return float(v)
-    except Exception:
-        return default
-
-
-def _metrics(r: pd.Series) -> Dict[str, float]:
-    o, h, l, c = map(_safe, [r.get("Open"), r.get("High"), r.get("Low"), r.get("Close")])
-    rng = max(h - l, 1e-9)
-    body = abs(c - o)
-    upper = h - max(o, c)
-    lower = min(o, c) - l
-    return {
-        "o": o, "h": h, "l": l, "c": c,
-        "rng": rng, "body": body, "upper": upper, "lower": lower,
-        "body_pct": body / rng, "close_pos": (c - l) / rng,
-    }
-
-
-def _near_limit(df: pd.DataFrame, idx: int, direction: int) -> bool:
-    """台股一般現貨漲跌停的近似辨識；特殊價格/除權息情況仍可能不同。"""
-    if idx <= 0:
-        return False
-    prev = _safe(df.iloc[idx - 1].get("Close"))
-    cur = _safe(df.iloc[idx].get("Close"))
-    if not np.isfinite(prev) or not np.isfinite(cur) or prev == 0:
-        return False
-    ret = cur / prev - 1
-    return ret >= 0.095 if direction > 0 else ret <= -0.095
-
-
-def _add(out: List[Pattern], name: str, group: str, bullish: int, weight: int, note: str):
-    out.append(Pattern(name, group, bullish, weight, note))
-
-
-def single_candle_patterns(df: pd.DataFrame) -> List[Pattern]:
-    out: List[Pattern] = []
-    if len(df) < 2:
-        return out
-    i = len(df) - 1
-    m = _metrics(df.iloc[-1])
-    body, rng, upper, lower = m["body"], m["rng"], m["upper"], m["lower"]
-    o, c = m["o"], m["c"]
-    bull = c >= o
-
-    # 使用者最新圖卡：九種常見單根型態
-    if body / rng <= 0.20:
-        _add(out, "小陽線" if bull else "小陰線", "單根K", 1 if bull else -1, 2,
-             "實體偏小，多空力量接近平衡")
-
-    if 0.20 < body / rng <= 0.65 and upper / rng > 0.08 and lower / rng > 0.08:
-        _add(out, "中陽上下影" if bull else "中陰上下影", "單根K", 1 if bull else -1, 2,
-             "中等實體且上下皆有影線")
-
-    if bull and _near_limit(df, i, +1) and m["close_pos"] > 0.82 and lower / rng > 0.08:
-        _add(out, "下影漲停板", "單根K", 1, 6, "接近漲停且收在高位，下方有明顯下影")
-
-    if lower >= max(body * 2.0, rng * 0.35) and upper <= rng * 0.20 and m["close_pos"] >= 0.55:
-        _add(out, "錘頭／錘子線", "單根K", 1, 5, "長下影、短上影，若出現在跌勢末端較有意義")
-
-    if bull and body / rng >= 0.80 and upper / rng <= 0.08 and lower / rng <= 0.08:
-        _add(out, "光頭大陽線", "單根K", 1, 5, "多方實體大且上下影極短")
-
-    if body / rng <= 0.08 and upper / rng > 0.25 and lower / rng > 0.25:
-        _add(out, "十字星", "單根K", 0, 1, "開收接近，市場可能進入平衡或變盤")
-
-    if upper >= max(body * 2.0, rng * 0.35) and lower <= rng * 0.20 and m["close_pos"] <= 0.55:
-        _add(out, "倒錘子線" if bull else "上影線反轉型", "單根K", 1 if bull else -1, 4,
-             "長上影、短下影；位置不同，意義可能不同")
-
-    if (not bull) and _near_limit(df, i, -1) and m["close_pos"] < 0.18 and upper / rng > 0.08:
-        _add(out, "上影跌停板", "單根K", -1, 6, "接近跌停且收在低位，上方有明顯上影")
-
-    if (not bull) and body / rng >= 0.80 and upper / rng <= 0.08 and lower / rng <= 0.08:
-        _add(out, "光頭大陰線", "單根K", -1, 5, "空方實體大且上下影極短")
-
-    # 常見別名/補充
-    if lower >= body * 2 and upper <= body * 0.8 and m["close_pos"] > 0.6:
-        _add(out, "金針探底", "反轉", 1, 5, "長下影拒絕低檔")
-    if upper >= body * 2 and lower <= body * 0.8 and m["close_pos"] < 0.4:
-        _add(out, "射擊之星", "反轉", -1, 5, "長上影拒絕高檔")
-    return out
-
-
-def multi_candle_patterns(df: pd.DataFrame) -> List[Pattern]:
-    out: List[Pattern] = []
-    n = len(df)
-    if n < 3:
-        return out
-    a, b, c = df.iloc[-3], df.iloc[-2], df.iloc[-1]
-    ma, mb, mc = map(_metrics, [a, b, c])
-
-    # 紅三兵 / 三連陽
-    if all(_safe(x.Close) > _safe(x.Open) for x in [a, b, c]) and _safe(a.Close) < _safe(b.Close) < _safe(c.Close):
-        _add(out, "紅三兵", "多K", 1, 8, "連三根陽線且收盤逐步墊高")
-
-    # 雙針探底
-    if ma["lower"] > ma["body"] * 1.5 and mb["lower"] > mb["body"] * 1.5 and _safe(c.Close) >= _safe(b.Close):
-        _add(out, "雙針探底", "反轉", 1, 7, "連續兩日出現明顯下影，低檔承接增加")
-
-    # 早晨之星近似
-    if ma["c"] < ma["o"] and mb["body_pct"] < 0.35 and mc["c"] > mc["o"] and mc["c"] > (ma["o"] + ma["c"]) / 2:
-        _add(out, "早晨之星", "反轉", 1, 8, "跌勢後出現小實體與強勢反包回升")
-
-    # 曙光出現 / 穿刺
-    if ma["c"] < ma["o"] and mc["c"] > mc["o"] and mc["c"] > (ma["o"] + ma["c"]) / 2:
-        _add(out, "曙光出現", "反轉", 1, 6, "第二根陽線深入前一根陰線實體")
-
-    # 淡友反攻 / 烏雲蓋頂
-    if ma["c"] > ma["o"] and mc["c"] < mc["o"] and mc["c"] < (ma["o"] + ma["c"]) / 2:
-        _add(out, "淡友反攻", "反轉", -1, 6, "高位出現陰線並深入前陽線")
-
-    if n >= 5:
-        x = df.iloc[-5:]
-        closes = pd.to_numeric(x["Close"], errors="coerce")
-        opens = pd.to_numeric(x["Open"], errors="coerce")
-        if (closes > opens).sum() >= 4 and closes.iloc[-1] > closes.iloc[0]:
-            _add(out, "小步上揚", "趨勢", 1, 5, "短線多數交易日收紅並抬高")
-        if (closes < opens).sum() >= 4 and closes.iloc[-1] < closes.iloc[0]:
-            _add(out, "連續走弱", "趨勢", -1, 5, "短線多數交易日收黑並下移")
-
-    # 漲停雙響炮：強勢K → 小幅整理 → 再次大陽/接近漲停
-    if n >= 5:
-        r = df.iloc[-5:]
-        ret1 = _safe(r.iloc[-4].Close) / max(_safe(r.iloc[-5].Close), 1e-9) - 1
-        ret2 = _safe(r.iloc[-1].Close) / max(_safe(r.iloc[-2].Close), 1e-9) - 1
-        if ret1 > 0.05 and ret2 > 0.05:
-            _add(out, "漲停雙響炮", "突破", 1, 8, "前後皆有明顯強陽，中間出現整理")
-
-    # 上升三法 / 一石二鳥等採較寬鬆的趨勢近似
-    if n >= 5:
-        r = df.iloc[-5:]
-        if _safe(r.iloc[0].Close) < _safe(r.iloc[-1].Close) and (pd.to_numeric(r.Close).diff().dropna() > 0).sum() >= 3:
-            _add(out, "上升三法", "趨勢", 1, 5, "主趨勢向上，中間短暫整理後續強")
-
-    return out
-
-
-def trend_patterns(df: pd.DataFrame) -> List[Pattern]:
-    out: List[Pattern] = []
-    n = len(df)
-    if n < 60:
-        return out
-    close = pd.to_numeric(df["Close"], errors="coerce")
-    vol = pd.to_numeric(df.get("Volume", pd.Series(index=df.index)), errors="coerce")
-    ma5 = close.rolling(5).mean(); ma10 = close.rolling(10).mean(); ma20 = close.rolling(20).mean(); ma60 = close.rolling(60).mean()
-    last = df.iloc[-1]
-    c = _safe(last.Close)
-
-    # 均線
-    if ma5.iloc[-1] > ma10.iloc[-1] > ma20.iloc[-1] > ma60.iloc[-1]:
-        _add(out, "五線順上", "趨勢", 1, 8, "短中期均線呈多頭排列")
-    if ma5.iloc[-1] > ma10.iloc[-1] > ma20.iloc[-1]:
-        _add(out, "均線多頭", "趨勢", 1, 5, "5/10/20日均線多頭排列")
-    if ma5.iloc[-2] <= ma20.iloc[-2] and ma5.iloc[-1] > ma20.iloc[-1]:
-        _add(out, "一陽穿三線", "突破", 1, 8, "短均線由下向上穿越中期均線")
-    if ma5.iloc[-2] <= ma10.iloc[-2] and ma5.iloc[-1] > ma10.iloc[-1]:
-        _add(out, "黃金交叉", "突破", 1, 5, "5日均線上穿10日均線")
-
-    # 前高突破
-    prev_high = pd.to_numeric(df.High, errors="coerce").iloc[-21:-1].max()
-    if np.isfinite(prev_high) and c > prev_high:
-        _add(out, "突破前高", "突破", 1, 8, "收盤突破近20個交易日高點")
-
-    # 缺口向上：今日低點高於前一日高點
-    if _safe(df.iloc[-1].Low) > _safe(df.iloc[-2].High) * 1.002:
-        _add(out, "突破缺口", "突破", 1, 7, "向上跳空且缺口尚未回補")
-
-    # 量增
-    if len(vol.dropna()) >= 20:
-        v20 = vol.rolling(20).mean().iloc[-1]
-        if np.isfinite(v20) and vol.iloc[-1] > v20 * 1.5 and c > _safe(last.Open):
-            _add(out, "量價突破", "量價", 1, 6, "上漲伴隨成交量放大")
-        if np.isfinite(v20) and vol.iloc[-1] > v20 * 2:
-            _add(out, "爆量", "量價", 0, 2, "成交量超過20日均量約兩倍")
-
-    # 回踩支撐確認：近10日曾突破20日高，之後回踩10/20MA又收回
-    if n >= 30:
-        recent = close.iloc[-10:]
-        support = ma20.iloc[-1]
-        if np.isfinite(support) and recent.min() <= support * 1.02 and c > support and c > _safe(df.iloc[-2].Close):
-            _add(out, "回踩支撐確認", "支撐", 1, 7, "回測20日均線後重新轉強")
-
-    # 五日線上 / 上升通道爬坡型：20日斜率為正且最近多數收盤在20MA上方
-    if n >= 30:
-        ma20_slope = ma20.iloc[-1] / max(ma20.iloc[-11], 1e-9) - 1
-        above = (close.iloc[-10:] > ma20.iloc[-10:]).mean()
-        if ma20_slope > 0.03 and above >= 0.7:
-            _add(out, "上升通道爬坡型", "趨勢", 1, 6, "20日均線上彎且大多數收盤位於其上")
-
-    # 三重底：最近60日的三個局部低點接近
-    if n >= 60:
-        lows = pd.to_numeric(df.Low, errors="coerce").iloc[-60:].values
-        q = np.nanpercentile(lows, 25)
-        near = lows[lows <= q * 1.04]
-        if len(near) >= 3:
-            _add(out, "三重底", "底部", 1, 5, "近60日低點多次在相近區域獲得支撐")
-
-    # 魚躍龍門：盤整後突破
-    if n >= 30:
-        range30 = (pd.to_numeric(df.High).iloc[-30:-5].max() - pd.to_numeric(df.Low).iloc[-30:-5].min()) / max(close.iloc[-5], 1e-9)
-        if range30 < 0.18 and c > pd.to_numeric(df.High).iloc[-30:-1].max():
-            _add(out, "魚躍龍門", "突破", 1, 7, "前期波動收斂後向上突破")
-
-    # 老鴨頭近似：多頭排列→短線回檔→再突破
-    if n >= 40:
-        prior_bull = ma20.iloc[-15] > ma60.iloc[-15]
-        pullback = close.iloc[-8:-2].min() < close.iloc[-15:-8].max() * 0.98
-        reclaim = c > close.iloc[-15:-1].max() * 0.995
-        if prior_bull and pullback and reclaim:
-            _add(out, "老鴨頭", "趨勢", 1, 6, "多頭結構中的回檔後再度轉強")
-
-    # 美人肩 / 九九豔陽天：以斜率與連續創高作近似
-    if n >= 20:
-        if close.iloc[-1] > close.iloc[-5] > close.iloc[-10] and ma20.iloc[-1] > ma20.iloc[-10]:
-            _add(out, "九九豔陽天", "趨勢", 1, 6, "短中期價格與20MA同步上行")
-        if ma20.iloc[-1] > ma20.iloc[-6] and abs(close.iloc[-1] / max(ma20.iloc[-1],1e-9)-1) < 0.06:
-            _add(out, "美人肩", "整理", 1, 3, "上升趨勢中靠近均線整理")
-
-    return out
-
-
-def detect_patterns(df: pd.DataFrame) -> List[Pattern]:
-    if df is None or len(df) < 3:
-        return []
-    return single_candle_patterns(df) + multi_candle_patterns(df) + trend_patterns(df)
-
-
-def pattern_names(df: pd.DataFrame) -> List[str]:
-    return list(dict.fromkeys(p.name for p in detect_patterns(df)))
-
-
-def pattern_summary(df: pd.DataFrame) -> Dict[str, object]:
-    ps = detect_patterns(df)
-    bull = sum(p.weight for p in ps if p.bullish > 0)
-    bear = sum(p.weight for p in ps if p.bullish < 0)
-    neutral = sum(p.weight for p in ps if p.bullish == 0)
-    return {
-        "patterns": [p.name for p in ps],
-        "bull_points": bull,
-        "bear_points": bear,
-        "neutral_points": neutral,
-        "details": [p.__dict__ for p in ps],
-    }
-
-
-def decision(df: pd.DataFrame, institutional_total=np.nan, institutional_streak=0) -> Dict[str, object]:
-    """產生『可買 / 再等等 / 不建議』研究訊號。"""
-    if df is None or len(df) < 60:
-        return {"label":"🟡 再等等", "score":0, "reasons":["歷史資料不足"], "risks":["無法完成完整型態確認"]}
-
+def prepare(df):
     d = df.copy()
-    close = pd.to_numeric(d.Close, errors="coerce")
-    ma5 = close.rolling(5).mean(); ma20 = close.rolling(20).mean(); ma60 = close.rolling(60).mean()
-    rsi = np.nan
-    delta = close.diff(); gain = delta.clip(lower=0).rolling(14).mean(); loss = (-delta.clip(upper=0)).rolling(14).mean()
-    if len(close):
-        rs = gain / loss.replace(0, np.nan)
-        rsi = float((100 - 100/(1+rs)).iloc[-1]) if pd.notna((100 - 100/(1+rs)).iloc[-1]) else np.nan
+    if isinstance(d.columns, pd.MultiIndex):
+        d.columns = d.columns.get_level_values(0)
+    d.columns = [str(c).title() for c in d.columns]
+    required = ["Open", "High", "Low", "Close", "Volume"]
+    for c in required:
+        if c not in d.columns:
+            d[c] = np.nan
+        d[c] = pd.to_numeric(d[c], errors="coerce")
+    d = d.dropna(subset=["Open", "High", "Low", "Close"]).copy()
+    for n in [5, 10, 20, 60, 120, 240]:
+        d[f"MA{n}"] = d["Close"].rolling(n).mean()
+    d["V5"] = d["Volume"].rolling(5).mean()
+    d["V20"] = d["Volume"].rolling(20).mean()
+    delta = d["Close"].diff()
+    gain = delta.clip(lower=0).rolling(14).mean()
+    loss = (-delta.clip(upper=0)).rolling(14).mean()
+    rs = gain / loss.replace(0, np.nan)
+    d["RSI"] = 100 - 100 / (1 + rs)
+    ema12 = d["Close"].ewm(span=12, adjust=False).mean()
+    ema26 = d["Close"].ewm(span=26, adjust=False).mean()
+    d["MACD"] = ema12 - ema26
+    d["MACDSignal"] = d["MACD"].ewm(span=9, adjust=False).mean()
+    d["MACDHist"] = d["MACD"] - d["MACDSignal"]
+    mid = d["Close"].rolling(20).mean()
+    sd = d["Close"].rolling(20).std()
+    d["BBMid"] = mid
+    d["BBUpper"] = mid + 2 * sd
+    d["BBLower"] = mid - 2 * sd
+    d["Return5"] = d["Close"].pct_change(5) * 100
+    d["Return20"] = d["Close"].pct_change(20) * 100
+    return d
 
-    s = pattern_summary(d)
-    score = 50
-    reasons: List[str] = []
-    risks: List[str] = []
 
-    score += min(22, s["bull_points"])
-    score -= min(22, s["bear_points"])
+def _candle(row):
+    body = abs(row.Close - row.Open)
+    rng = max(row.High - row.Low, 1e-9)
+    upper = row.High - max(row.Open, row.Close)
+    lower = min(row.Open, row.Close) - row.Low
+    return body, rng, upper, lower, row.Close > row.Open, row.Close < row.Open
 
-    if close.iloc[-1] > ma20.iloc[-1]:
-        score += 8; reasons.append("收盤站上20日均線")
-    else:
-        score -= 8; risks.append("收盤位於20日均線下方")
 
-    if ma5.iloc[-1] > ma20.iloc[-1] > ma60.iloc[-1]:
-        score += 7; reasons.append("5/20/60日均線偏多")
-    elif ma5.iloc[-1] < ma20.iloc[-1] < ma60.iloc[-1]:
-        score -= 7; risks.append("均線偏空排列")
+def detect_patterns(d):
+    p = []
+    if len(d) < 5:
+        return p
+    r = d.iloc[-1]
+    body, rng, upper, lower, bull, bear = _candle(r)
+    ratio = body / rng
+    if ratio <= 0.12: p.append("十字星")
+    elif ratio <= 0.25 and bull: p.append("小陽線")
+    elif ratio <= 0.25 and bear: p.append("小陰線")
+    if lower >= max(body * 2, rng * .45) and upper <= rng * .2: p.append("錘頭／錘子線")
+    if upper >= max(body * 2, rng * .45) and lower <= rng * .2: p.append("倒錘子線")
+    if bull and ratio >= .75 and upper <= rng*.08 and lower <= rng*.08: p.append("光頭大陽線")
+    if bear and ratio >= .75 and upper <= rng*.08 and lower <= rng*.08: p.append("光頭大陰線")
+    if len(d) >= 3:
+        a,b,c=d.iloc[-3],d.iloc[-2],d.iloc[-1]
+        ab,ar,au,al,abull,abear=_candle(a); bb,br,bu,bl,bbull,bbear=_candle(b); cb,cr,cu,cl,cbull,cbear=_candle(c)
+        if abull and bbull and cbull and a.Close < b.Close < c.Close: p.append("紅三兵")
+        if abear and bb <= ab*.6 and cbull and c.Close > (a.Open+a.Close)/2: p.append("早晨之星")
+        if abear and cbull and c.Close > a.Open and c.Open <= a.Close: p.append("反攻")
+        if abear and cbull and c.Close > (a.Open+a.Close)/2: p.append("曙光出現")
+        if al > ab*1.5 and bl > bb*1.5: p.append("雙針探底")
+        if abear and cbull and c.Open <= a.Close and c.Close >= a.Open: p.append("多頭吞噬")
+        if abull and cbear and c.Open >= a.Close and c.Close <= a.Open: p.append("空頭吞噬")
+    if len(d) >= 60:
+        if r.MA5 > r.MA10 > r.MA20 > r.MA60: p.append("五線順上")
+        if r.Close > r.MA5 > r.MA10 > r.MA20: p.append("均線多頭")
+        if r.Close < r.MA5 < r.MA10 < r.MA20: p.append("均線空頭")
+        if d.MA5.iloc[-2] <= d.MA20.iloc[-2] and d.MA5.iloc[-1] > d.MA20.iloc[-1]: p.append("均線黃金交叉")
+        if d.MA5.iloc[-2] >= d.MA20.iloc[-2] and d.MA5.iloc[-1] < d.MA20.iloc[-1]: p.append("均線死亡交叉")
+        if r.Close > r.MA5 and r.Close > r.MA10 and r.Close > r.MA20 and d.Close.iloc[-2] < d.MA20.iloc[-2]: p.append("一陽穿三線")
+        if r.Close > r.BBUpper and r.Volume > r.V5: p.append("布林突破")
+        prev_high=d.High.iloc[-21:-1].max()
+        if r.Close > prev_high: p.append("突破前高")
+        support=d.Low.iloc[-21:-1].min()
+        if r.Low <= support*1.02 and r.Close > r.Open and r.Close > support: p.append("回踩支撐確認")
+        if pd.notna(r.V5) and r.Volume > r.V5*1.5: p.append("量增")
+        if pd.notna(r.V5) and r.Volume > r.V5*2: p.append("爆量")
+    if len(d) >= 20:
+        recent=d.Close.iloc[-10:]; older=d.Close.iloc[-20:-10]
+        if recent.mean()>older.mean() and recent.iloc[-1]>recent.iloc[0]: p.append("短線上升")
+        if recent.iloc[-1] < recent.max()*.97 and recent.iloc[-1] > older.mean(): p.append("高檔整理")
+    return list(dict.fromkeys(p))
 
-    if pd.notna(institutional_total):
-        if institutional_total > 0:
-            score += 8; reasons.append("三大法人合計買超")
-        elif institutional_total < 0:
-            score -= 8; risks.append("三大法人合計賣超")
-    else:
-        risks.append("法人資料未取得，不以0張代替")
 
-    if institutional_streak >= 3:
-        score += 5; reasons.append(f"法人連續買超{institutional_streak}日")
+def bearish_patterns(d):
+    p=[]
+    if len(d)<5: return p
+    r=d.iloc[-1]; body,rng,upper,lower,bull,bear=_candle(r)
+    if upper>=rng*.6 and body/rng<=.35: p.append("高檔長上影")
+    if bear and body/rng>=.7: p.append("長黑K")
+    if len(d)>=3:
+        a,b,c=d.iloc[-3],d.iloc[-2],d.iloc[-1]
+        if a.Close>a.Open and b.Close>b.Open and c.Close<c.Open and c.Close < (a.Open+a.Close)/2: p.append("烏雲蓋頂")
+        if a.Close>a.Open and c.Close<c.Open and c.Open>=a.Close and c.Close<=a.Open: p.append("空頭吞噬")
+    if len(d)>=60:
+        if r.Close<r.MA5<r.MA10<r.MA20: p.append("均線空頭")
+        if d.MA5.iloc[-2]>=d.MA20.iloc[-2] and d.MA5.iloc[-1]<d.MA20.iloc[-1]: p.append("均線死亡交叉")
+    return list(dict.fromkeys(p))
 
+
+def score(d,bullish,bearish,institution_total=np.nan,institution_5d=np.nan,institution_20d=np.nan,revenue_yoy=np.nan):
+    last=d.iloc[-1]; technical=0; reasons=[]; risks=[]
+    bw={"紅三兵":7,"早晨之星":7,"多頭吞噬":7,"錘頭／錘子線":5,"雙針探底":5,"一陽穿三線":7,"五線順上":7,"均線多頭":5,"均線黃金交叉":6,"布林突破":7,"突破前高":8,"回踩支撐確認":7,"量增":4,"爆量":2,"短線上升":4,"曙光出現":5,"反攻":5,"光頭大陽線":5}
+    sw={"烏雲蓋頂":-8,"空頭吞噬":-9,"長黑K":-6,"均線空頭":-8,"均線死亡交叉":-8,"高檔長上影":-5}
+    for x in bullish:
+        if x in bw: technical += bw[x]; reasons.append(x)
+    for x in bearish:
+        if x in sw: technical += sw[x]; risks.append(x)
+    if pd.notna(last.MA20): technical += 5 if last.Close>last.MA20 else -5
+    rsi=last.RSI
     if pd.notna(rsi):
-        if rsi >= 80:
-            score -= 8; risks.append(f"RSI {rsi:.1f}，短線過熱")
-        elif rsi >= 75:
-            score -= 4; risks.append(f"RSI {rsi:.1f}，偏熱")
-        elif 50 <= rsi < 70:
-            score += 3; reasons.append(f"RSI {rsi:.1f}，多方仍有空間")
-        elif rsi < 35:
-            risks.append(f"RSI {rsi:.1f}，弱勢區")
-
-    score = int(max(0, min(100, score)))
-    bullish_names = set(s["patterns"]) & {
-        "金針探底","紅三兵","早晨之星","曙光出現","錘頭／錘子線",
-        "五線順上","均線多頭","一陽穿三線","突破前高","突破缺口",
-        "量價突破","回踩支撐確認","老鴨頭","九九豔陽天","漲停雙響炮",
-        "上升三法","魚躍龍門"
-    }
-    bearish_names = set(s["patterns"]) & {"上影跌停板","光頭大陰線","射擊之星","淡友反攻","連續走弱"}
-
-    # 需要『型態 + 趨勢 + 籌碼』至少同時成立，避免單根K就給買進訊號。
-    institutional_ok = pd.notna(institutional_total) and institutional_total > 0
-    trend_ok = close.iloc[-1] > ma20.iloc[-1] and ma5.iloc[-1] > ma20.iloc[-1]
-    hot = pd.notna(rsi) and rsi >= 78
-
-    if score >= 78 and bullish_names and trend_ok and institutional_ok and not hot:
-        label = "🟢 可買條件成立"
-    elif score >= 58 and not bearish_names:
-        label = "🟡 再等等"
-        if bullish_names:
-            risks.append("有偏多型態，但尚缺少趨勢/法人/價格確認")
-    else:
-        label = "🔴 不建議"
-        if bearish_names:
-            risks.append("偵測到偏空或反轉風險型態")
-
-    if not reasons:
-        reasons.append("尚未形成足夠的多方共振")
-    if not risks:
-        risks.append("仍需觀察下一交易日是否確認型態")
-
-    return {
-        "label": label,
-        "score": score,
-        "reasons": list(dict.fromkeys(reasons))[:6],
-        "risks": list(dict.fromkeys(risks))[:6],
-        "patterns": s["patterns"],
-        "rsi": rsi,
-    }
+        if 45<=rsi<=68: technical+=4
+        elif 68<rsi<75: technical+=1
+        elif rsi>=75: technical-=5; risks.append("RSI過熱")
+        elif rsi<30: risks.append("RSI超賣，等待反轉確認")
+    chip=0
+    for val,weight in [(institution_total,8),(institution_5d,6),(institution_20d,4)]:
+        if pd.notna(val): chip += weight if val>0 else -weight if val<0 else 0
+    fundamental=0
+    if pd.notna(revenue_yoy): fundamental += 6 if revenue_yoy>10 else 3 if revenue_yoy>0 else -5
+    total=int(np.clip(50+technical+chip+fundamental,0,100))
+    if total>=78 and not(pd.notna(rsi) and rsi>=75): signal="可研究"; action="多項條件同時轉強，可列入觀察/研究名單"
+    elif total>=60: signal="再等等"; action="有部分訊號，但仍需要價格、量能或法人確認"
+    else: signal="偏弱"; action="目前多項條件偏弱，避免只因單一K線追價"
+    if pd.notna(rsi) and rsi>=75: signal="再等等"; action="短線偏熱，等待拉回或再次確認突破"
+    return {"分數":total,"訊號":signal,"動作":action,"理由":reasons[:8],"風險":risks[:8],"技術分":technical,"籌碼分":chip,"基本面分":fundamental}

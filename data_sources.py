@@ -5,7 +5,7 @@ from datetime import datetime, timedelta
 
 HEADERS={"User-Agent":"Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 Chrome/126 Safari/537.36"}
 
-def _get_json(url, params=None, timeout=20):
+def _get_json(url, params=None, timeout=8):
     try:
         r=requests.get(url,params=params,headers=HEADERS,timeout=timeout)
         r.raise_for_status(); return r.json()

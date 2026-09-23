@@ -1,4 +1,6 @@
 import re
+import json
+from pathlib import Path
 import numpy as np
 import pandas as pd
 import streamlit as st
@@ -110,6 +112,20 @@ def get_core_data():
             st.session_state.get("inst_date"),
             st.session_state.get("rev_df",pd.DataFrame()))
 
+def load_daily_radar_cache():
+    """讀取 GitHub Actions 每日產生的雷達快取；失敗時完全不影響原本手動選股。"""
+    path = Path(__file__).resolve().parent / "radar_cache.json"
+    try:
+        if not path.exists():
+            return pd.DataFrame(), ""
+        payload = json.loads(path.read_text(encoding="utf-8"))
+        rows = payload.get("results", []) if isinstance(payload, dict) else []
+        if not rows:
+            return pd.DataFrame(), ""
+        return pd.DataFrame(rows), str(payload.get("generated_at", ""))
+    except Exception:
+        return pd.DataFrame(), ""
+
 # ---------- Tabs ----------
 tab_auto,tab_search,tab_detail,tab_fin,tab_patterns=st.tabs(["🚀 自動選股","🔎 個股查詢","📊 詳細分析","📑 財報/法人","🕯️ K線型態庫"])
 
@@ -120,6 +136,20 @@ with tab_auto:
     limit=max_scan
     pool_label="全市場" if universe=="全部市場（較慢）" else f"{nmap[universe]} 檔"
     st.info(f"目前候選池：{pool_label}；本次最多深度分析 {limit} 檔。篩選會優先處理成交金額較大的股票。")
+
+    # 每日自動更新：只讀 GitHub Actions 產生的快取，不改原本版面或手動分析流程。
+    if "auto_table" not in st.session_state:
+        daily_df, daily_time = load_daily_radar_cache()
+        if not daily_df.empty:
+            show_df = daily_df.copy()
+            if only_bull and "判斷" in show_df.columns:
+                show_df = show_df[show_df["判斷"].isin(["可研究", "再等等"])]
+            if "雷達分數" in show_df.columns:
+                show_df = show_df[pd.to_numeric(show_df["雷達分數"], errors="coerce") >= min_score]
+                show_df = show_df.sort_values("雷達分數", ascending=False)
+            st.session_state["auto_table"] = show_df.reset_index(drop=True)
+            st.caption(f"📅 每日自動更新：{daily_time or '最近一次成功更新'}｜資料由 GitHub Actions 產生")
+
     if st.button("🚀 開始全市場自動選股",type="primary",width="stretch"):
         with st.spinner("正在載入台股清單、法人與營收資料…"):
             stocks,inst_map,inst_date,rev_df=load_core_data()

@@ -18,12 +18,9 @@ st.set_page_config(page_title='台股雷達 PRO', page_icon='📈', layout='wide
 
 BASE = Path(__file__).resolve().parent
 CACHE_FILE = BASE / 'radar_cache.json'
-# Optional chart/image assets are deliberately not required.
-# The app must continue to work when the repository has no assets/ directory.
-ASSETS_DIR = BASE / 'assets'
 UA = {'User-Agent': 'Mozilla/5.0'}
 
-def http_json(url, params=None, timeout=8):
+def http_json(url, params=None, timeout=15):
     try:
         r = requests.get(url, params=params, headers=UA, timeout=timeout)
         r.raise_for_status()
@@ -251,7 +248,7 @@ def price_history(code, days=260):
                 interval='1d',
                 auto_adjust=False,
                 progress=False,
-                timeout=10
+                timeout=12
             )
 
             if isinstance(df, pd.DataFrame) and not df.empty:
@@ -787,341 +784,236 @@ def market_only_radar():
     ].sort_values("score", ascending=False).head(30).reset_index(drop=True)
 
 def cached_or_live_radar():
-    """首頁啟動時只讀快取；沒有快取就用單次市場資料做輕量 fallback。
-
-    絕對不要在 Streamlit 啟動階段執行 live_radar()：
-    live_radar 會對多檔股票逐檔抓法人歷史與營收，會讓首頁長時間停在 Loading。
-    """
     c = load_cache()
 
     if isinstance(c, dict) and c.get('results'):
         return pd.DataFrame(c['results']), c.get('generated_at', '')
 
+    live = live_radar()
+
+    if not live.empty:
+        return live, datetime.now().strftime('%Y-%m-%d %H:%M')
+
     fallback = market_only_radar()
+
     return (
         fallback,
         datetime.now().strftime('%Y-%m-%d %H:%M')
         if not fallback.empty else ''
     )
 
+def cached_or_live_radar():
+    c = load_cache()
+    if isinstance(c, dict) and c.get('results'):
+        return pd.DataFrame(c['results']), c.get('generated_at', '')
+
+    # 重要：首頁絕對不要在啟動時 live_radar()。
+    # 沒有 GitHub Actions 快取時，改用輕量市場資料，避免 App 卡在 Loading。
+    fallback = market_only_radar()
+    return (fallback, datetime.now().strftime('%Y-%m-%d %H:%M') if not fallback.empty else '')
+
 # -----------------------------
 # UI
 # -----------------------------
 st.title('📈 台股雷達 PRO')
 st.caption('法人籌碼 × 營收 × 技術分析 × K線型態｜自動選股 + 個股查詢')
-st.caption('🚀 首頁啟動模式：快取優先，不在開頁時掃描大量 API')
 
-cache_df, cache_time = cached_or_live_radar()
+# 側邊選單：保留上一版的操作方式
+with st.sidebar:
+    st.markdown('## 📈 台股雷達 PRO')
+    page = st.radio(
+        '功能選單',
+        ['🔥 今日雷達', '🔎 個股分析', '⚙️ 系統狀態'],
+        index=0
+    )
+    st.divider()
+    st.caption('資料來源：TWSE 官方資料 + yfinance')
 
-st.subheader('🔥 今日自動雷達')
 
-if not cache_df.empty:
+def render_radar():
+    st.subheader('🔥 今日自動雷達')
+    st.caption('首頁只讀快取或輕量市場資料，不會啟動時掃描 20 檔股票。')
+
+    cache_df, cache_time = cached_or_live_radar()
+
+    if cache_df.empty:
+        st.warning('目前沒有可用的市場資料，請稍後重新整理。')
+        return
+
     if cache_time:
-        st.caption(
-            f'資料快取時間：{cache_time}｜法人資料需通過官方欄位與合計驗證後才進入雷達'
-        )
+        st.caption(f'資料時間：{cache_time}')
 
     c1, c2, c3, c4 = st.columns(4)
-
-    c1.metric(
-        '偏多訊號',
-        int((cache_df.score >= 75).sum())
-    )
-
-    c2.metric(
-        '觀察名單',
-        int(((cache_df.score >= 60) & (cache_df.score < 75)).sum())
-    )
-
-    c3.metric(
-        '法人5日偏多',
-        int((cache_df.five > 0).sum())
-    )
-
-    c4.metric(
-        '營收創高',
-        int(
-            cache_df.revenue_signal.astype(str)
-            .str.contains('新高')
-            .sum()
-        )
-    )
+    c1.metric('偏多訊號', int((cache_df.score >= 75).sum()))
+    c2.metric('觀察名單', int(((cache_df.score >= 60) & (cache_df.score < 75)).sum()))
+    c3.metric('法人5日偏多', int((cache_df.five.fillna(0) > 0).sum()))
+    c4.metric('營收創高', int(cache_df.revenue_signal.astype(str).str.contains('新高').sum()))
 
     display = cache_df.head(30).copy()
-
-    display['法人合計'] = display.inst_total.map(
-        lambda x: f'{lots(x):,.1f} 張'
-        if not pd.isna(x) else '—'
-    )
-
-    display['法人5日'] = display.five.map(
-        lambda x: f'{lots(x):,.1f} 張'
-        if not pd.isna(x) else '—'
-    )
-
-    display['RSI'] = display.rsi.map(
-        lambda x: f'{x:.1f}'
-        if not pd.isna(x) else '—'
-    )
-
-    display['營收YoY'] = display.revenue_yoy.map(
-        lambda x: f'{x:.1f}%'
-        if not pd.isna(x) else '—'
-    )
+    display['法人合計'] = display.inst_total.map(lambda x: f'{lots(x):,.1f} 張' if not pd.isna(x) else '—')
+    display['法人5日'] = display.five.map(lambda x: f'{lots(x):,.1f} 張' if not pd.isna(x) else '—')
+    display['RSI'] = display.rsi.map(lambda x: f'{x:.1f}' if not pd.isna(x) else '—')
+    display['營收YoY'] = display.revenue_yoy.map(lambda x: f'{x:.1f}%' if not pd.isna(x) else '—')
 
     st.dataframe(
-        display[
-            [
-                'code','name','label','score','close',
-                '法人合計','法人5日','RSI','營收YoY',
-                'revenue_signal','patterns','reason'
-            ]
-        ],
-        width='stretch',
-        hide_index=True,
+        display[['code','name','label','score','close','法人合計','法人5日','RSI','營收YoY','revenue_signal','patterns','reason']],
+        width='stretch', hide_index=True,
         column_config={
-            'code':'代號',
-            'name':'名稱',
-            'label':'雷達訊號',
-            'score':'總分',
-            'close':'收盤',
-            'revenue_signal':'營收訊號',
-            'patterns':'K線型態',
-            'reason':'主要原因'
+            'code':'代號','name':'名稱','label':'雷達訊號','score':'總分',
+            'close':'收盤','revenue_signal':'營收訊號','patterns':'K線型態','reason':'主要原因'
         }
     )
-else:
-    st.warning('目前即時雷達暫時沒有取得資料；請稍後重新整理。')
 
-st.caption('⚡ 首頁啟動不會自動掃描 20 檔股票；完整雷達建議由 GitHub Actions 產生 radar_cache.json，避免網站開啟時卡住。')
+    st.info('💡 自動雷達如果有 GitHub Actions 產生的 radar_cache.json，首頁會直接顯示完整法人＋技術＋營收結果；沒有快取時則先顯示輕量市場雷達，避免首頁卡住。')
 
-st.divider()
-st.subheader('🔎 個股查詢')
 
-query = st.text_area(
-    '輸入股票代號／名稱，可一次查詢多檔',
-    placeholder='例如：2330, 2317, 2454\n也可以一行一檔：2330\n2317\n2454',
-    height=90,
-    key='stock_query',
-)
+def render_stock_analysis():
+    st.subheader('🔎 個股分析')
+    st.caption('輸入代號或名稱後按「開始分析」，資料才會開始抓取。')
 
-if query.strip():
-    universe = stock_universe()
+    query = st.text_area(
+        '股票代號／名稱',
+        placeholder='例如：2330, 2317, 2454\n或：台積電',
+        height=90,
+        key='stock_query'
+    )
 
-    tokens = [
-        x.strip()
-        for x in re.split(r'[\s,，、;；|]+', query.strip())
-        if x.strip()
-    ]
+    col1, col2 = st.columns([1, 4])
+    with col1:
+        run = st.button('🔍 開始分析', type='primary', width='stretch')
 
-    seen = set()
-    tokens = [
-        x for x in tokens
-        if not (x in seen or seen.add(x))
-    ]
+    if not run:
+        st.info('請輸入股票代號，例如 2330，然後按「開始分析」。')
+        return
 
-    selected = []
+    if not query.strip():
+        st.warning('請先輸入股票代號或名稱。')
+        return
 
-    for token in tokens:
-        m = universe[universe['code'].eq(token)]
+    with st.status('正在準備分析資料…', expanded=True) as status:
+        st.write('① 取得股票清單')
+        universe = stock_universe()
 
-        if m.empty:
-            m = universe[
-                universe['name'].str.contains(
-                    token,
-                    case=False,
-                    na=False
-                )
-            ]
+        tokens = [x.strip() for x in re.split(r'[\s,，、;；|]+', query.strip()) if x.strip()]
+        seen = set()
+        tokens = [x for x in tokens if not (x in seen or seen.add(x))]
 
-        if not m.empty:
-            selected.append(m.iloc[0].to_dict())
+        selected = []
+        for token in tokens:
+            m = universe[universe['code'].eq(token)]
+            if m.empty:
+                m = universe[universe['name'].str.contains(token, case=False, na=False)]
+            if not m.empty:
+                selected.append(m.iloc[0].to_dict())
 
-    if not selected:
-        st.warning('找不到符合的股票代號／名稱。')
-    else:
+        if not selected:
+            status.update(label='找不到股票', state='error')
+            st.warning('找不到符合的股票代號／名稱。')
+            return
+
+        st.write(f'② 找到 {len(selected)} 檔：' + '、'.join(x['code'] for x in selected))
+        st.write('③ 取得法人資料')
         inst_all = institutional_latest()
+        st.write('④ 開始取得股價、法人歷史與營收')
 
-        progress = st.progress(0, text='準備取得個股資料…')
-        total_selected = len(selected)
-
-        for idx, r in enumerate(selected):
-            code, name = r['code'], r['name']
-            progress.progress(idx / max(total_selected, 1), text=f'正在分析 {code} {name}…')
-
-            p = price_history(code, 260)
-            h = institutional_history(code, 20)
-            rv = revenue_history(code, 24)
-
+        results=[]
+        progress=st.progress(0)
+        for i,r in enumerate(selected):
+            code,name=r['code'],r['name']
+            p=price_history(code,260)
             if p.empty:
                 st.warning(f'{code} {name}：價格資料暫時無法取得。')
+                progress.progress((i+1)/len(selected))
                 continue
-
-            t = technicals(p)
-            inst = inst_all.get(code, {})
-            stats = institution_stats(h)
-            rev = revenue_summary(rv)
-            pats = patterns(t)
-            last = t.iloc[-1]
-
-            total = (
-                inst.get('foreign', np.nan)
-                + inst.get('trust', np.nan)
-                + inst.get('dealer', np.nan)
-                if inst else np.nan
-            )
-
-            score_obj = score_stock(
-                code, name, r, inst, h, p, rv
-            )
-
-            score = score_obj['score'] if score_obj else 50
-            label = score_obj['label'] if score_obj else '🟡 注意'
-
-            # 修正 f-string 巢狀引號
-            st.markdown(
-                f"## 📌 {code} {name or '（名稱未取得）'}"
-            )
-
-            st.caption(
-                f'{label}｜雷達分數 {score}'
-            )
-
-            if score_obj:
-                st.write(
-                    f'籌碼 {score_obj.get("inst_points",0)}/25 ｜ '
-                    f'技術 {score_obj.get("tech_points",0)}/20 ｜ '
-                    f'K線 {score_obj.get("k_points",0)}/20 ｜ '
-                    f'營收 {score_obj.get("revenue_points",0)}/15 ｜ '
-                    f'財報 {score_obj.get("fund_points",0)}/15 ｜ '
-                    f'量價 {score_obj.get("volume_points",0)}/5'
-                )
-
-                st.caption(
-                    '主要訊號：' +
-                    (score_obj.get('reason') or '—')
-                )
-
-            a,b,c,d = st.columns(4)
-
-            a.metric('收盤', fmt(last.Close, 2))
-            b.metric('雷達分數', score)
-            c.metric('法人連買/賣', f'{stats["streak"]} 天')
-            d.metric('RSI', fmt(last.RSI,1))
-
-            tabs = st.tabs(
-                ['🏦 法人','📈 技術 / K線','💰 營收','📊 財報']
-            )
-
-            with tabs[0]:
-                st.write(
-                    f'外資：{fmt(lots(inst.get("foreign", np.nan)),1)} 張'
-                )
-                st.write(
-                    f'投信：{fmt(lots(inst.get("trust", np.nan)),1)} 張'
-                )
-                st.write(
-                    f'自營商：{fmt(lots(inst.get("dealer", np.nan)),1)} 張'
-                )
-                st.write(
-                    f'法人合計：{fmt(lots(total),1)} 張'
-                )
-                st.write(
-                    f'法人連買／賣：{stats["streak"]} 天'
-                )
-                st.write(
-                    f'法人5日：{fmt(lots(stats["five"]),1)} 張'
-                )
-                st.write(
-                    f'法人20日：{fmt(lots(stats["twenty"]),1)} 張'
-                )
-
-                if not h.empty:
-                    hh = h.copy()
-
-                    for col in ['foreign','trust','dealer','total']:
-                        hh[col] = hh[col].map(lots)
-
-                    st.dataframe(
-                        hh.rename(
-                            columns={
-                                'date':'日期',
-                                'foreign':'外資(張)',
-                                'trust':'投信(張)',
-                                'dealer':'自營商(張)',
-                                'total':'合計(張)'
-                            }
-                        ),
-                        width='stretch',
-                        hide_index=True
-                    )
-
-            with tabs[1]:
-                cols = st.columns(4)
-
-                cols[0].metric('MA5', fmt(last.MA5,2))
-                cols[1].metric('MA20', fmt(last.MA20,2))
-                cols[2].metric('MA60', fmt(last.MA60,2))
-                cols[3].metric('MACD', fmt(last.MACD,2))
-
-                st.write(
-                    f'K線型態：**{("、".join(pats) if pats else "—")}**'
-                )
-
-                st.dataframe(
-                    t.tail(40)[
-                        [
-                            'Open','High','Low','Close','Volume',
-                            'MA5','MA10','MA20','MA60',
-                            'RSI','MACD','Signal'
-                        ]
-                    ],
-                    width='stretch'
-                )
-
-            with tabs[2]:
-                st.write(
-                    f'本月營收：'
-                    f'{fmt(rv.revenue.iloc[-1],0) if not rv.empty else "—"}'
-                )
-
-                st.write(
-                    f'YoY：{fmt(rev["yoy"],1)}%｜'
-                    f'MoM：{fmt(rev["mom"],1)}%'
-                )
-
-                st.write(
-                    f'最高：{fmt(rev["high5"],0)}｜'
-                    f'最低：{fmt(rev["low5"],0)}'
-                )
-
-                st.write(
-                    f'近12月最高：{fmt(rev["high12"],0)}｜'
-                    f'近12月最低：{fmt(rev["low12"],0)}'
-                )
-
-                st.write(
-                    f'訊號：**{rev["signal"]}**'
-                )
-
-                if not rv.empty:
-                    st.line_chart(
-                        rv.set_index('date')['revenue']
-                    )
-
-            with tabs[3]:
-                st.info(
-                    '財報資料目前維持「未取得＝中性」原則；'
-                    'EPS、毛利率、營益率、ROE、現金流尚未取得經驗證的官方欄位，'
-                    '因此不參與多空加分，避免把缺資料當成 0。'
-                )
-
-        progress.progress(1.0, text='分析完成')
+            h=institutional_history(code,20)
+            rv=revenue_history(code,60)
+            t=technicals(p)
+            inst=inst_all.get(code,{})
+            stats=institution_stats(h)
+            rev=revenue_summary(rv)
+            pats=patterns(t)
+            score_obj=score_stock(code,name,r,inst,h,p,rv)
+            results.append((r,p,h,rv,t,inst,stats,rev,pats,score_obj))
+            progress.progress((i+1)/len(selected))
         progress.empty()
+        status.update(label='分析完成', state='complete')
+
+    if not results:
+        st.error('沒有取得足夠的價格資料。')
+        return
+
+    for r,p,h,rv,t,inst,stats,rev,pats,score_obj in results:
+        code,name=r['code'],r['name']
+        last=t.iloc[-1]
+        score=score_obj['score'] if score_obj else 50
+        label=score_obj['label'] if score_obj else '🟡 注意'
+        total=inst.get('foreign',np.nan)+inst.get('trust',np.nan)+inst.get('dealer',np.nan) if inst else np.nan
+
+        st.divider()
+        st.markdown(f'## 📌 {code} {name or "（名稱未取得）"}')
+        st.caption(f'{label}｜雷達分數 {score}')
+        if score_obj:
+            st.write(
+                f'籌碼 {score_obj.get("inst_points",0)}/25 ｜ 技術 {score_obj.get("tech_points",0)}/20 ｜ '
+                f'K線 {score_obj.get("k_points",0)}/20 ｜ 營收 {score_obj.get("revenue_points",0)}/15 ｜ '
+                f'財報 {score_obj.get("fund_points",0)}/15 ｜ 量價 {score_obj.get("volume_points",0)}/5'
+            )
+            st.caption('主要訊號：' + (score_obj.get('reason') or '—'))
+
+        a,b,c,d=st.columns(4)
+        a.metric('收盤',fmt(last.Close,2))
+        b.metric('雷達分數',score)
+        c.metric('法人連買/賣',f'{stats["streak"]} 天')
+        d.metric('RSI',fmt(last.RSI,1))
+
+        tabs=st.tabs(['🏦 法人','📈 技術 / K線','💰 營收','📊 財報'])
+        with tabs[0]:
+            st.write(f'外資：{fmt(lots(inst.get("foreign",np.nan)),1)} 張')
+            st.write(f'投信：{fmt(lots(inst.get("trust",np.nan)),1)} 張')
+            st.write(f'自營商：{fmt(lots(inst.get("dealer",np.nan)),1)} 張')
+            st.write(f'法人合計：{fmt(lots(total),1)} 張')
+            st.write(f'法人連買／賣：{stats["streak"]} 天')
+            st.write(f'法人5日：{fmt(lots(stats["five"]),1)} 張')
+            st.write(f'法人20日：{fmt(lots(stats["twenty"]),1)} 張')
+            if not h.empty:
+                hh=h.copy()
+                for col in ['foreign','trust','dealer','total']:
+                    hh[col]=hh[col].map(lots)
+                st.dataframe(hh.rename(columns={'date':'日期','foreign':'外資(張)','trust':'投信(張)','dealer':'自營商(張)','total':'合計(張)'}),width='stretch',hide_index=True)
+        with tabs[1]:
+            cols=st.columns(4)
+            cols[0].metric('MA5',fmt(last.MA5,2)); cols[1].metric('MA20',fmt(last.MA20,2)); cols[2].metric('MA60',fmt(last.MA60,2)); cols[3].metric('MACD',fmt(last.MACD,2))
+            st.write(f'K線型態：**{("、".join(pats) if pats else "—")}**')
+            st.dataframe(t.tail(40)[['Open','High','Low','Close','Volume','MA5','MA10','MA20','MA60','RSI','MACD','Signal']],width='stretch')
+        with tabs[2]:
+            st.write(f'本月營收：{fmt(rv.revenue.iloc[-1],0) if not rv.empty else "—"}')
+            st.write(f'YoY：{fmt(rev["yoy"],1)}%｜MoM：{fmt(rev["mom"],1)}%')
+            st.write(f'最高：{fmt(rev["high5"],0)}｜最低：{fmt(rev["low5"],0)}')
+            st.write(f'近12月最高：{fmt(rev["high12"],0)}｜近12月最低：{fmt(rev["low12"],0)}')
+            st.write(f'訊號：**{rev["signal"]}**')
+            if not rv.empty: st.line_chart(rv.set_index('date')['revenue'])
+        with tabs[3]:
+            st.info('財報資料目前維持「未取得＝中性」原則；未取得經驗證的官方欄位，不參與加分。')
+
+
+def render_status():
+    st.subheader('⚙️ 系統狀態')
+    st.write(f'Python / Streamlit：正常啟動')
+    st.write(f'yfinance：{"已載入" if yf is not None else "未載入，將使用 TWSE 備援"}')
+    cache=load_cache()
+    if isinstance(cache,dict) and cache.get('results'):
+        st.success(f'已找到 radar_cache.json：{len(cache["results"])} 筆雷達資料')
+        st.caption(f'快取時間：{cache.get("generated_at", "未知")}')
+    else:
+        st.warning('目前沒有 radar_cache.json；首頁會使用輕量市場資料，不會因此卡住。')
+
+
+if page == '🔥 今日雷達':
+    render_radar()
+elif page == '🔎 個股分析':
+    render_stock_analysis()
+else:
+    render_status()
 
 st.divider()
-
-st.caption(
-    '資料來源以 TWSE 官方資料為主；yfinance 作為價格歷史備援。'
-    '自動雷達屬於條件篩選與研究工具，不代表個別投資建議。'
-)
+st.caption('資料來源以 TWSE 官方資料為主；yfinance 作為價格歷史備援。雷達屬條件篩選與研究工具，不代表個別投資建議。')

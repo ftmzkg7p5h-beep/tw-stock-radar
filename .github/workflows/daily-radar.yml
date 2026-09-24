@@ -3,7 +3,7 @@ name: Daily Taiwan Stock Radar
 on:
   workflow_dispatch:
   schedule:
-    - cron: "0 10 * * 1-5"
+    - cron: '0 10 * * 1-5'
 
 permissions:
   contents: write
@@ -20,8 +20,8 @@ jobs:
       - name: Setup Python
         uses: actions/setup-python@v5
         with:
-          python-version: "3.12"
-          cache: "pip"
+          python-version: '3.12'
+          cache: 'pip'
 
       - name: Install dependencies
         run: pip install -r requirements.txt
@@ -29,17 +29,17 @@ jobs:
       - name: Run daily radar
         run: python daily_scan.py
 
-      - name: Update signal performance
+      - name: Update performance
         run: python performance_tracker.py
 
-      - name: Save radar cache and performance
+      - name: Save results
         run: |
           git config user.name "github-actions[bot]"
           git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
           git add radar_cache.json signal_history.json performance_summary.json
           if git diff --cached --quiet; then
-            echo "radar_cache.json 沒有變更"
+            echo "沒有新的資料需要提交"
           else
-            git commit -m "chore: update daily radar cache"
+            git commit -m "chore: update daily radar"
             git push
           fi

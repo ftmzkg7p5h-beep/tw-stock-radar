@@ -348,8 +348,12 @@ with tab_portfolio:
     portfolio_text = st.text_area("目前持倉", placeholder="2330 1200 1000\n2454 980 2000", height=120, key="portfolio_text")
     if st.button("🔎 檢查持倉／出場訊號", type="primary", width="stretch"):
         # 持倉管理與每日選股完全分離：持有哪一檔，就直接分析哪一檔。
+        # 持倉按鈕是獨立入口；若本次 Session 尚未載入核心資料，這裡主動載入，
+        # 避免 stocks 尚未初始化成 None 時直接呼叫 .empty 導致 AttributeError。
         stocks, inst_map, inst_date, rev_df = get_core_data()
-        if stocks.empty:
+        if stocks is None or stocks.empty:
+            stocks, inst_map, inst_date, rev_df = load_core_data()
+        if stocks is None or stocks.empty:
             st.error("目前無法取得股票清單，請稍後再試。")
         else:
             code_to_name = dict(zip(stocks["代號"].astype(str), stocks["名稱"]))

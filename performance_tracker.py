@@ -57,7 +57,7 @@ def main():
     existing = {(str(x.get("日期")), str(x.get("代號"))) for x in history}
     for r in rows:
         action = str(r.get("判斷", ""))
-        if action not in {"🟢 買進條件成立", "🔵 突破確認", "🟡 等待", "🟠 不追高", "🔴 不買"}:
+        if action not in {"🟢 早期佈局", "🟢 買進條件成立", "🔵 突破確認", "🟡 等待", "🟠 不追高", "🔴 不買"}:
             continue
         key = (today, str(r.get("代號", "")))
         if key in existing:
@@ -128,7 +128,7 @@ def main():
             "positive_rate": round(sum(v > 0 for v in vals) / len(vals) * 100, 2) if vals else None,
             "avg_return": round(float(np.mean(vals)), 2) if vals else None,
         }
-    for sig in ["🟢 買進條件成立", "🔵 突破確認", "🟡 等待", "🟠 不追高", "🔴 不買"]:
+    for sig in ["🟢 早期佈局", "🟢 買進條件成立", "🔵 突破確認", "🟡 等待", "🟠 不追高", "🔴 不買"]:
         subset = [x for x in history if x.get("判斷") == sig]
         vals = [float(x["5日報酬%"]) for x in subset if x.get("5日報酬%") is not None]
         summary["by_signal"][sig] = {"count": len(subset), "5d_count": len(vals), "5d_positive_rate": round(sum(v > 0 for v in vals)/len(vals)*100,2) if vals else None, "5d_avg_return": round(float(np.mean(vals)),2) if vals else None}

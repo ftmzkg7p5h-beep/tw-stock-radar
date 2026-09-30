@@ -84,6 +84,7 @@ def analyze_one(code: str, name: str, inst_map: dict, bulk_inst: dict, rev_df: p
             "目標2": round(s["目標2"],2),
             "風險報酬": round(s["風險報酬"],2) if pd.notna(s["風險報酬"]) else None,
             "K線訊號": "、".join((bullish[:3] + bearish[:2])),
+            "K線出場警戒": "、".join(bearish[:3]) if bearish else "—",
         }
     except Exception:
         return None

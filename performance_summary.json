@@ -1,33 +1,33 @@
 {
-  "updated_at": "2026-09-29T12:07:14+00:00",
-  "total_signals": 160,
+  "updated_at": "2026-09-30T02:37:48+00:00",
+  "total_signals": 240,
   "by_signal": {
     "🟢 買進條件成立": {
-      "count": 27,
+      "count": 42,
       "5d_count": 0,
       "5d_positive_rate": null,
       "5d_avg_return": null
     },
     "🔵 突破確認": {
-      "count": 1,
+      "count": 3,
       "5d_count": 0,
       "5d_positive_rate": null,
       "5d_avg_return": null
     },
     "🟡 等待": {
-      "count": 45,
+      "count": 64,
       "5d_count": 0,
       "5d_positive_rate": null,
       "5d_avg_return": null
     },
     "🟠 不追高": {
-      "count": 18,
+      "count": 28,
       "5d_count": 0,
       "5d_positive_rate": null,
       "5d_avg_return": null
     },
     "🔴 不買": {
-      "count": 69,
+      "count": 103,
       "5d_count": 0,
       "5d_positive_rate": null,
       "5d_avg_return": null
@@ -35,34 +35,34 @@
   },
   "by_score": {
     "90-100": {
-      "count": 31,
+      "count": 45,
       "5d_count": 0,
       "5d_positive_rate": null,
       "5d_avg_return": null
     },
     "80-89": {
-      "count": 19,
+      "count": 31,
       "5d_count": 0,
       "5d_positive_rate": null,
       "5d_avg_return": null
     },
     "70-79": {
-      "count": 33,
+      "count": 48,
       "5d_count": 0,
       "5d_positive_rate": null,
       "5d_avg_return": null
     },
     "0-69": {
-      "count": 77,
+      "count": 116,
       "5d_count": 0,
       "5d_positive_rate": null,
       "5d_avg_return": null
     }
   },
   "1日報酬%": {
-    "count": 80,
-    "positive_rate": 38.75,
-    "avg_return": -0.79
+    "count": 158,
+    "positive_rate": 58.23,
+    "avg_return": 0.56
   },
   "5日報酬%": {
     "count": 0,

@@ -173,7 +173,7 @@ def load_daily_radar_cache():
         return pd.DataFrame(), ""
 
 # ---------- Tabs ----------
-tab_auto,tab_search,tab_detail,tab_fin,tab_patterns=st.tabs(["🚀 自動選股","🔎 個股查詢","📊 詳細分析","📑 財報/法人","🕯️ K線型態庫"])
+tab_auto,tab_search,tab_portfolio,tab_detail,tab_fin,tab_patterns=st.tabs(["🚀 自動選股","🔎 個股查詢","🛡️ 持倉/出場","📊 詳細分析","📑 財報/法人","🕯️ K線型態庫"])
 
 with tab_auto:
     st.subheader("🚀 全自動選股")
@@ -294,6 +294,13 @@ with tab_auto:
                 signal = str(selected.get("判斷", ""))
                 st.markdown(f"### 🎯 已選取：{code} {name}")
                 st.success(f"{signal}｜雷達分數：{selected.get('雷達分數', '—')}")
+                st.markdown("#### 🛡️ 交易風控區")
+                q1,q2,q3,q4=st.columns(4)
+                q1.metric("進場參考", f"{num(selected.get('進場參考')):.2f}" if pd.notna(num(selected.get('進場參考'))) else "—")
+                q2.metric("防守／停損", f"{num(selected.get('停損')):.2f}" if pd.notna(num(selected.get('停損'))) else "—")
+                q3.metric("目標1", f"{num(selected.get('目標1')):.2f}" if pd.notna(num(selected.get('目標1'))) else "—")
+                q4.metric("目標2", f"{num(selected.get('目標2')):.2f}" if pd.notna(num(selected.get('目標2'))) else "—")
+                st.caption("若已持有：到目標1避免貪心，可考慮分批落袋；到目標2重新評估；跌破停損則優先處理風險。")
                 detail_items = []
                 for col, val in selected.items():
                     if col.startswith("_"):
@@ -332,6 +339,73 @@ with tab_search:
         else: st.session_state["manual_results"]=run_manual(codes,stocks,inst_map,rev_df)
     if st.session_state.get("manual_results"):
         st.dataframe(pd.DataFrame([result_row(r) for r in st.session_state["manual_results"]]),width="stretch",hide_index=True)
+
+with tab_portfolio:
+    st.subheader("🛡️ 持倉／出場管理")
+    st.markdown("**目的：已經買進的股票，不只看它會不會漲，也要知道什麼時候該停利、停損，避免一路抱到貪心變回吐。**")
+    st.info("輸入格式：一行一檔 `代號,成本價,股數`。例如 `2330,1200,1000`。系統會用每日雷達資料的停損／目標價做出場警示。")
+    portfolio_text = st.text_area("目前持倉", placeholder="2330,1200,1000\n2454,980,2000", height=120, key="portfolio_text")
+    if st.button("🔎 檢查持倉／出場訊號", type="primary", width="stretch"):
+        daily_df, daily_time = load_daily_radar_cache()
+        if daily_df.empty:
+            st.error("目前沒有每日雷達資料，請先讓 GitHub Actions 成功更新一次。")
+        else:
+            cache = {str(r.get("代號")): r for r in daily_df.to_dict("records")}
+            positions=[]
+            errors=[]
+            for line_no, line in enumerate((portfolio_text or "").splitlines(), 1):
+                parts=[x.strip() for x in line.replace("，",",").split(",")]
+                if len(parts)<3:
+                    if line.strip(): errors.append(f"第 {line_no} 行格式錯誤")
+                    continue
+                code=parts[0]
+                try:
+                    cost=float(parts[1]); shares=float(parts[2])
+                except Exception:
+                    errors.append(f"第 {line_no} 行成本／股數不是數字")
+                    continue
+                row=cache.get(code)
+                if row is None:
+                    errors.append(f"{code} 不在本次每日雷達候選資料中；請先用『個股查詢』確認。")
+                    continue
+                try:
+                    price=float(row.get("收盤"))
+                    stop=float(row.get("停損"))
+                    t1=float(row.get("目標1"))
+                    t2=float(row.get("目標2"))
+                except Exception:
+                    errors.append(f"{code} 缺少完整停損／目標資料")
+                    continue
+                pnl=(price/cost-1)*100 if cost else np.nan
+                if price <= stop:
+                    status="🔴 出場警示"
+                    reason="跌到／跌破系統防守價，優先處理風險，不再用『等等看』拖延。"
+                elif price >= t2:
+                    status="🟠 目標2達成"
+                    reason="已到第二目標區；避免貪心，應重新評估是否分批落袋或提高防守線。"
+                elif price >= t1:
+                    status="🟡 目標1達成"
+                    reason="已到第一目標區；可考慮分批落袋，剩餘部位改用移動防守。"
+                elif pnl > 0 and str(row.get("判斷","")).startswith("🔴"):
+                    status="⚠️ 持有條件轉弱"
+                    reason="目前仍獲利，但雷達訊號已轉弱；不要只因獲利而忽略條件惡化。"
+                else:
+                    status="🟢 持有觀察"
+                    reason="尚未觸發系統停損／目標；依原計畫持有並等待下一次更新。"
+                positions.append({
+                    "代號":code,"名稱":row.get("名稱",""),"狀態":status,
+                    "現價":price,"成本":cost,"損益%":round(pnl,2),"股數":shares,
+                    "停損":stop,"目標1":t1,"目標2":t2,"雷達":row.get("判斷",""),"理由":reason
+                })
+            if errors:
+                for e in errors: st.warning(e)
+            if positions:
+                pdf=pd.DataFrame(positions)
+                order={"🔴 出場警示":0,"🟠 目標2達成":1,"🟡 目標1達成":2,"⚠️ 持有條件轉弱":3,"🟢 持有觀察":4}
+                pdf["_o"]=pdf["狀態"].map(order).fillna(99)
+                pdf=pdf.sort_values("_o").drop(columns="_o")
+                st.dataframe(pdf, width="stretch", hide_index=True)
+                st.caption(f"資料時間：{daily_time or '最近一次成功更新'}。出場警示是規則化風控工具，不是保證性指令。")
 
 with tab_detail:
     stocks,inst_map,inst_date,rev_df=get_core_data()

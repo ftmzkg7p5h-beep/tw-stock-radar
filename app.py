@@ -344,74 +344,92 @@ with tab_search:
 with tab_portfolio:
     st.subheader("🛡️ 持倉／出場管理")
     st.markdown("**目的：已經買進的股票，不只看它會不會漲，也要知道什麼時候該停利、停損，避免一路抱到貪心變回吐。**")
-    st.info("輸入格式：一行一檔，使用空白分隔 `代號 成本價 股數`。例如 `2330 1200 1000`。逗號也可接受；系統會用每日雷達資料的停損／目標價＋K線轉弱訊號做出場警示。")
+    st.info("輸入格式：一行一檔，使用空白分隔 `代號 成本價 股數`。例如 `2330 1200 1000`。系統會直接重新抓你輸入股票的最新價格、K線、法人與雷達風控；**不要求它先進每日候選池**。")
     portfolio_text = st.text_area("目前持倉", placeholder="2330 1200 1000\n2454 980 2000", height=120, key="portfolio_text")
     if st.button("🔎 檢查持倉／出場訊號", type="primary", width="stretch"):
-        daily_df, daily_time = load_daily_radar_cache()
-        if daily_df.empty:
-            st.error("目前沒有每日雷達資料，請先讓 GitHub Actions 成功更新一次。")
+        # 持倉管理與每日選股完全分離：持有哪一檔，就直接分析哪一檔。
+        stocks, inst_map, inst_date, rev_df = get_core_data()
+        if stocks.empty:
+            st.error("目前無法取得股票清單，請稍後再試。")
         else:
-            cache = {str(r.get("代號")): r for r in daily_df.to_dict("records")}
+            code_to_name = dict(zip(stocks["代號"].astype(str), stocks["名稱"]))
             positions=[]
             errors=[]
-            for line_no, line in enumerate((portfolio_text or "").splitlines(), 1):
-                # 支援手機最方便的「空白分隔」；同時相容逗號／中文逗號／Tab。
-                parts=[x.strip() for x in re.split(r"[\s,，、;；]+", line.strip()) if x.strip()]
+            lines=(portfolio_text or "").splitlines()
+
+            for line_no, line in enumerate(lines, 1):
+                # 手機直接空白輸入即可；仍相容 Tab／換行。
+                parts=[x.strip() for x in re.split(r"\s+", line.strip()) if x.strip()]
                 if len(parts)<3:
-                    if line.strip(): errors.append(f"第 {line_no} 行格式錯誤")
+                    if line.strip(): errors.append(f"第 {line_no} 行格式錯誤：請輸入 代號 成本價 股數")
                     continue
-                code=parts[0]
+
+                code=str(parts[0])
                 try:
                     cost=float(parts[1]); shares=float(parts[2])
                 except Exception:
                     errors.append(f"第 {line_no} 行成本／股數不是數字")
                     continue
-                row=cache.get(code)
-                if row is None:
-                    errors.append(f"{code} 不在本次每日雷達候選資料中；請先用『個股查詢』確認。")
+
+                name=code_to_name.get(code, "")
+                if not name:
+                    errors.append(f"{code} 找不到股票名稱，請確認代號")
                     continue
+
                 try:
-                    price=float(row.get("收盤"))
-                    stop=float(row.get("停損"))
-                    t1=float(row.get("目標1"))
-                    t2=float(row.get("目標2"))
-                except Exception:
-                    errors.append(f"{code} 缺少完整停損／目標資料")
+                    r=analyze(code, name, inst_map, rev_df)
+                except Exception as exc:
+                    r=None
+                    errors.append(f"{code} 分析失敗：{type(exc).__name__}")
+
+                if not r:
+                    errors.append(f"{code} 暫時取得不到足夠的價格／K線資料")
                     continue
-                pnl=(price/cost-1)*100 if cost else np.nan
-                if price <= stop:
+
+                row=result_row(r)
+                price=num(r.get("close"))
+                stop=num(row.get("停損"))
+                t1=num(row.get("目標1"))
+                t2=num(row.get("目標2"))
+                pnl=(price/cost-1)*100 if cost and pd.notna(price) else np.nan
+
+                if pd.notna(stop) and price <= stop:
                     status="🔴 出場警示"
                     reason="跌到／跌破系統防守價，優先處理風險，不再用『等等看』拖延。"
-                elif price >= t2:
+                elif pd.notna(t2) and price >= t2:
                     status="🟠 目標2達成"
                     reason="已到第二目標區；避免貪心，應重新評估是否分批落袋或提高防守線。"
-                elif price >= t1:
+                elif pd.notna(t1) and price >= t1:
                     status="🟡 目標1達成"
                     reason="已到第一目標區；可考慮分批落袋，剩餘部位改用移動防守。"
-                elif str(row.get("K線出場警戒", "")).strip() not in ("", "—", "nan", "None"):
-                    patterns = str(row.get("K線出場警戒"))
+                elif r.get("bearish"):
+                    patterns="、".join(r.get("bearish",[])[:3])
                     status="🟠 K線出場警戒"
                     reason=f"偵測到轉弱／反轉型態：{patterns}。這是警戒，不是單一K線就強制賣出；搭配停損、目標與整體雷達判斷。"
-                elif pnl > 0 and str(row.get("判斷","")).startswith("🔴"):
+                elif pnl > 0 and str(row.get("判斷","" )).startswith("🔴"):
                     status="⚠️ 持有條件轉弱"
                     reason="目前仍獲利，但雷達訊號已轉弱；不要只因獲利而忽略條件惡化。"
                 else:
                     status="🟢 持有觀察"
                     reason="尚未觸發系統停損／目標，也沒有新的K線轉弱警戒；依原計畫持有並等待下一次更新。"
+
                 positions.append({
-                    "代號":code,"名稱":row.get("名稱",""),"狀態":status,
-                    "現價":price,"成本":cost,"損益%":round(pnl,2),"股數":shares,
+                    "代號":code,"名稱":name,"狀態":status,
+                    "現價":round(price,2) if pd.notna(price) else np.nan,
+                    "成本":cost,"損益%":round(pnl,2) if pd.notna(pnl) else np.nan,"股數":shares,
                     "停損":stop,"目標1":t1,"目標2":t2,"雷達":row.get("判斷",""),"理由":reason
                 })
+
             if errors:
                 for e in errors: st.warning(e)
+
             if positions:
                 pdf=pd.DataFrame(positions)
                 order={"🔴 出場警示":0,"🟠 目標2達成":1,"🟡 目標1達成":2,"🟠 K線出場警戒":3,"⚠️ 持有條件轉弱":4,"🟢 持有觀察":5}
                 pdf["_o"]=pdf["狀態"].map(order).fillna(99)
-                pdf=pdf.sort_values("_o").drop(columns="_o")
+                pdf=pdf.sort_values(["_o","損益%"],ascending=[True,False]).drop(columns="_o")
                 st.dataframe(pdf, width="stretch", hide_index=True)
-                st.caption(f"資料時間：{daily_time or '最近一次成功更新'}。出場警示是規則化風控工具，不是保證性指令。")
+                st.caption(f"資料時間：{inst_date or '最新可取得資料'}。持倉分析會直接針對輸入股票重新計算，不受每日雷達前50／100／200候選池限制。出場警示是規則化風控工具，不是保證性指令。")
 
 with tab_detail:
     stocks,inst_map,inst_date,rev_df=get_core_data()

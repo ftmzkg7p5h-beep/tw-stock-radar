@@ -298,31 +298,66 @@ def score(d,bullish,bearish,institution_total=np.nan,institution_5d=np.nan,insti
     early_ready=(early>=68 and setup_count>=3 and not breakout and not overheat)
     if overheat:
         signal="🟠 不追高"; action="趨勢可能仍強，但位置已偏高；等待拉回到低風險區，不追最後一段"
+    elif space_block and (early_ready or total>=75):
+        signal="🟡 等待"; action="上方第一壓力距離太近，預期報酬不足2R；等拉回降低成本或突破後重新評估，不在這裡追買"
     elif early_ready:
-        signal="🟢 早期佈局"; action="尚未明顯過熱，已有多個領先條件同步改善；列入提前觀察區"
-    elif total>=85:
-        signal="🟢 買進條件成立"; action="趨勢、籌碼與基本面同時偏多；仍需依停損執行"
-    elif total>=75 and breakout:
-        signal="🔵 突破確認"; action="突破型態成立；確認量能與停損後再處理"
+        signal="🟢 早期佈局"; action="尚未明顯過熱，已有多個領先條件同步改善，且第一目標至少具2R空間"
+    elif total>=85 and rr_ok:
+        signal="🟢 買進條件成立"; action="趨勢、籌碼與基本面同時偏多，且第一目標至少具2R空間；仍需依停損執行"
+    elif total>=75 and breakout and rr_ok:
+        signal="🔵 突破確認"; action="突破型態成立且風險報酬達標；確認量能與停損後再處理"
     elif total>=68:
-        signal="🟡 等待"; action="條件尚未完整，等待拉回支撐或突破確認"
+        signal="🟡 等待"; action="條件尚未完整，等待拉回支撐、突破確認或更好的風險報酬"
     else:
         signal="🔴 不買"; action="目前訊號偏弱，不以單一指標逆勢進場"
 
     if total<50 and not early_ready and not overheat:
         signal="🔴 不買"; action="目前趨勢與早期轉強條件都不足"
 
+    # ---------- Reward / Risk Gate v4.4 ----------
+    # 不能因為「可能會漲」就把一檔上方只剩 1~2% 空間的股票列為買進。
+    # 先找實際價格結構上的壓力位，再計算第一目標；若第一壓力太近，
+    # 直接把它視為「空間不足」，不讓高分訊號繞過風控。
     stop=max(0.01, close-1.5*atr)
-    target1=close+1.5*atr
-    target2=close+3.0*atr
-    rr=(target1-close)/(close-stop) if close>stop else np.nan
+    risk=max(close-stop, 0.01)
+
+    resistance=[]
+    if len(d)>=21:
+        h20=float(d.High.iloc[-21:-1].max())
+        if np.isfinite(h20) and h20 > close*1.005:
+            resistance.append(h20)
+    if len(d)>=60:
+        h60=float(d.High.iloc[-60:-1].max())
+        if np.isfinite(h60) and h60 > close*1.005:
+            resistance.append(h60)
+    if pd.notna(last.BBUpper) and float(last.BBUpper) > close*1.005:
+        resistance.append(float(last.BBUpper))
+
+    resistance=sorted(set(round(x, 6) for x in resistance))
+    # 第一目標採最近的結構壓力；如果最近壓力離得太近，不能把它硬包裝成高報酬買點。
+    target1=resistance[0] if resistance else close+3.0*atr
+    # 第二目標找下一個壓力；不足時才使用較遠的 ATR 延伸。
+    higher=[x for x in resistance if x > target1*1.003]
+    target2=higher[0] if higher else max(close+4.5*atr, target1+1.5*atr)
+    rr=(target1-close)/risk if close>stop else np.nan
+    reward_space_pct=(target1/close-1)*100 if close>0 else np.nan
+    rr_ok=bool(pd.notna(rr) and rr>=2.0)
+
+    # 進場區仍以目前價格附近為主，但不鼓勵在區間上緣追價。
     entry_zone_low=max(0.01, min(close, ma20)-0.75*atr)
-    entry_zone_high=min(close+0.5*atr, ma20+1.0*atr)
+    entry_zone_high=min(close+0.35*atr, ma20+0.75*atr)
+
+    # 若第一個真正壓力連 2R 都不到，這不是好的「現在買」位置。
+    # 保留早期訊號供觀察，但最終分類會被空間閘門降為等待。
+    space_block=not rr_ok
+    if space_block:
+        early_risks.append(f"上方第一壓力僅約{reward_space_pct:.1f}%；不足2R")
     return {
         "分數":total,"早期趨勢分":early,"早期條件數":setup_count,"訊號":signal,"動作":action,
         "理由":reasons[:8],"風險":risks[:8],"早期理由":early_reasons[:10],"早期風險":early_risks[:8],
         "技術分":technical,"籌碼分":chip,"基本面分":fundamental,
         "ATR14":atr,"進場參考":close,"進場區下緣":entry_zone_low,"進場區上緣":entry_zone_high,
-        "停損參考":stop,"目標1":target1,"目標2":target2,"風險報酬":rr,"突破確認":breakout,
+        "停損參考":stop,"目標1":target1,"目標2":target2,"風險報酬":rr,"第一目標空間%":reward_space_pct,
+        "風險報酬達標":rr_ok,"空間不足":space_block,"突破確認":breakout,
         "位置距MA20%":dist20,"20日漲幅%":ret20,"60日位階%":pos60,"量能比5日均量":vr,
     }

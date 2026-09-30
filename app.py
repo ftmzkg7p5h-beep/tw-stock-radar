@@ -106,6 +106,8 @@ def result_row(r):
         "目標1":round(num(s.get("目標1")),2) if pd.notna(num(s.get("目標1"))) else np.nan,
         "目標2":round(num(s.get("目標2")),2) if pd.notna(num(s.get("目標2"))) else np.nan,
         "風險報酬":round(num(s.get("風險報酬")),2) if pd.notna(num(s.get("風險報酬"))) else np.nan,
+        "第一目標空間%":round(num(s.get("第一目標空間%")),2) if pd.notna(num(s.get("第一目標空間%"))) else np.nan,
+        "風險報酬達標":"是" if s.get("風險報酬達標") is True else "否" if s.get("風險報酬達標") is False else "—",
         "K線訊號":"、".join((r.get("bullish",[])[:3]+r.get("bearish",[])[:2])),
         "K線出場警戒":"、".join(r.get("bearish",[])[:3]) if r.get("bearish") else "—"
     }
@@ -340,7 +342,7 @@ with tab_auto:
                 q2.metric("防守／停損", f"{num(selected.get('停損')):.2f}" if pd.notna(num(selected.get('停損'))) else "—")
                 q3.metric("目標1", f"{num(selected.get('目標1')):.2f}" if pd.notna(num(selected.get('目標1'))) else "—")
                 q4.metric("目標2", f"{num(selected.get('目標2')):.2f}" if pd.notna(num(selected.get('目標2'))) else "—")
-                st.caption("若已持有：到目標1避免貪心，可考慮分批落袋；到目標2重新評估；跌破停損則優先處理風險。")
+                st.caption("風控規則：第一目標必須有至少 2R 的報酬空間才列為可進場；若上方壓力太近，系統會改列「🟡 等待」，避免為了小利承擔較大風險。已持有則到目標1可考慮分批落袋，跌破停損優先處理風險。")
                 detail_items = []
                 for col, val in selected.items():
                     if col.startswith("_"):
@@ -353,7 +355,7 @@ with tab_auto:
         if not df.empty:
             st.markdown("### 自動選股解讀")
             st.write("**🟢 早期佈局**＝尚未明顯過熱，但多個領先條件正在改善；**🟢 買進條件成立**＝主要條件同時偏多；**🔵 突破確認**＝突破型態成立；**🟡 等待**＝條件尚未完整；**🔴 不買**＝目前條件偏弱；**🟠 不追高**＝位置過熱。")
-            st.caption("排序只是依照本工具的規則分組與分數排序，不代表未來報酬排名。")
+            st.caption("排序只是依照本工具的規則分組與分數排序，不代表未來報酬排名。現在買進訊號另加 2R 風險報酬閘門：上方第一壓力空間不足時，不會因分數高就硬列買進。")
 
 with tab_search:
     st.subheader("🔎 查詢指定個股")

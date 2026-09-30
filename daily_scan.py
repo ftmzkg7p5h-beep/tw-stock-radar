@@ -24,7 +24,7 @@ from kline_engine import bearish_patterns, detect_patterns, prepare, score
 
 ROOT = Path(__file__).resolve().parent
 OUT = ROOT / "radar_cache.json"
-LIMIT = int(os.getenv("RADAR_LIMIT", "80"))
+LIMIT = int(os.getenv("RADAR_LIMIT", "200"))
 WORKERS = int(os.getenv("RADAR_WORKERS", "8"))
 
 
@@ -76,6 +76,12 @@ def analyze_one(code: str, name: str, inst_map: dict, bulk_inst: dict, rev_df: p
             "法人20日(張)": clean_num(inst_stats.get("20日"))/1000 if clean_num(inst_stats.get("20日")) is not None else None,
             "RSI": clean_num(last.RSI),
             "雷達分數": int(s["分數"]),
+            "早期趨勢分": int(s.get("早期趨勢分", 0)),
+            "早期條件數": int(s.get("早期條件數", 0)),
+            "60日位階%": round(s.get("60日位階%", np.nan), 1) if pd.notna(s.get("60日位階%", np.nan)) else None,
+            "位置距MA20%": round(s.get("位置距MA20%", np.nan), 2) if pd.notna(s.get("位置距MA20%", np.nan)) else None,
+            "20日漲幅%": round(s.get("20日漲幅%", np.nan), 2) if pd.notna(s.get("20日漲幅%", np.nan)) else None,
+            "進場區": f"{s.get("進場區下緣", np.nan):.2f}～{s.get("進場區上緣", np.nan):.2f}" if pd.notna(s.get("進場區下緣", np.nan)) and pd.notna(s.get("進場區上緣", np.nan)) else "—",
             "判斷": s["訊號"],
             "動作": s["動作"],
             "進場參考": round(s["進場參考"],2),
@@ -133,7 +139,8 @@ def main():
             if row:
                 results.append(row)
 
-    results.sort(key=lambda x: x.get("雷達分數", -1), reverse=True)
+    signal_order={"🟢 早期佈局":0,"🟢 買進條件成立":1,"🔵 突破確認":2,"🟡 等待":3,"🟠 不追高":4,"🔴 不買":5}
+    results.sort(key=lambda x: (signal_order.get(x.get("判斷"),99), -float(x.get("早期趨勢分",0)), -float(x.get("雷達分數",-1))))
     now = datetime.now().astimezone().isoformat(timespec="seconds")
     payload = {
         "generated_at": now,

@@ -93,6 +93,12 @@ def result_row(r):
         "法人20日(張)":_lots(num(insts.get("20日"))),
         "RSI":round(num(r.get("rsi")),1) if pd.notna(num(r.get("rsi"))) else np.nan,
         "雷達分數":s.get("分數",np.nan),
+        "早期趨勢分":s.get("早期趨勢分",np.nan),
+        "早期條件數":s.get("早期條件數",np.nan),
+        "60日位階%":round(num(s.get("60日位階%")),1) if pd.notna(num(s.get("60日位階%"))) else np.nan,
+        "位置距MA20%":round(num(s.get("位置距MA20%")),2) if pd.notna(num(s.get("位置距MA20%"))) else np.nan,
+        "20日漲幅%":round(num(s.get("20日漲幅%")),2) if pd.notna(num(s.get("20日漲幅%"))) else np.nan,
+        "進場區":(f"{num(s.get("進場區下緣")):.2f}～{num(s.get("進場區上緣")):.2f}" if pd.notna(num(s.get("進場區下緣"))) and pd.notna(num(s.get("進場區上緣"))) else "—"),
         "判斷":s.get("訊號","⚪ 資料不足"),
         "動作":s.get("動作","資料不足"),
         "進場參考":round(num(s.get("進場參考")),2) if pd.notna(num(s.get("進場參考"))) else np.nan,
@@ -206,15 +212,16 @@ with tab_auto:
         if not daily_df.empty:
             show_df = daily_df.copy()
             if only_bull and "判斷" in show_df.columns:
-                show_df = show_df[show_df["判斷"].isin(["🟢 買進條件成立", "🔵 突破確認", "🟡 等待"])]
+                show_df = show_df[show_df["判斷"].isin(["🟢 早期佈局", "🟢 買進條件成立", "🔵 突破確認", "🟡 等待"])]
             if "雷達分數" in show_df.columns:
                 show_df = show_df[pd.to_numeric(show_df["雷達分數"], errors="coerce") >= min_score]
             signal_order = {
-                "🟢 買進條件成立": 0,
-                "🔵 突破確認": 1,
-                "🟡 等待": 2,
-                "🟠 不追高": 3,
-                "🔴 不買": 4,
+                "🟢 早期佈局": 0,
+                "🟢 買進條件成立": 1,
+                "🔵 突破確認": 2,
+                "🟡 等待": 3,
+                "🟠 不追高": 4,
+                "🔴 不買": 5,
             }
             if "判斷" in show_df.columns:
                 show_df["_signal_order"] = show_df["判斷"].map(signal_order).fillna(99)
@@ -273,7 +280,7 @@ with tab_auto:
             st.session_state["auto_table"] = df
 
         st.markdown("### 📋 自動選股結果")
-        st.caption("排序：🟢買進 → 🔵突破 → 🟡等待 → 🟠不追高 → 🔴不買；同類型再依分數由高到低。點一下股票那一列，下方會完整顯示該檔資料。")
+        st.caption("排序：🟢早期佈局 → 🟢買進 → 🔵突破 → 🟡等待 → 🟠不追高 → 🔴不買；同類型再依分數由高到低。點一下股票那一列，下方會完整顯示該檔資料。")
         event = st.dataframe(
             df,
             width="stretch",
@@ -313,7 +320,7 @@ with tab_auto:
 
         if not df.empty:
             st.markdown("### 自動選股解讀")
-            st.write("**🟢 買進條件成立**＝主要條件同時偏多；**🔵 突破確認**＝突破型態成立；**🟡 等待**＝條件尚未完整；**🔴 不買**＝目前條件偏弱；**🟠 不追高**＝短線過熱。")
+            st.write("**🟢 早期佈局**＝尚未明顯過熱，但多個領先條件正在改善；**🟢 買進條件成立**＝主要條件同時偏多；**🔵 突破確認**＝突破型態成立；**🟡 等待**＝條件尚未完整；**🔴 不買**＝目前條件偏弱；**🟠 不追高**＝位置過熱。")
             st.caption("排序只是依照本工具的規則分組與分數排序，不代表未來報酬排名。")
 
 with tab_search:
@@ -445,7 +452,7 @@ with tab_detail:
     else:
         code=st.selectbox("選擇股票",list(unique.keys()),format_func=lambda x:f"{x}｜{unique[x]['name']}")
         r=unique[code]; s=r["score"]
-        if s.get("訊號") in ["🟢 買進條件成立","🔵 突破確認"]: st.success(f"{s.get('訊號')}｜{s.get('動作','')}")
+        if s.get("訊號") in ["🟢 早期佈局","🟢 買進條件成立","🔵 突破確認"]: st.success(f"{s.get('訊號')}｜{s.get('動作','')}")
         elif s.get("訊號")=="🟡 等待": st.warning(f"{s.get('訊號')}｜{s.get('動作','')}")
         else: st.error(f"{s.get('訊號','⚪ 資料不足')}｜{s.get('動作','')}")
         a,b,c,d=st.columns(4); a.metric("雷達分數",s["分數"]); b.metric("收盤",f"{r['close']:.2f}"); c.metric("今日漲跌",f"{r['change_pct']:.2f}%"); d.metric("RSI",f"{r['rsi']:.1f}" if pd.notna(r['rsi']) else "—")

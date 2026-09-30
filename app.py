@@ -230,7 +230,7 @@ with tab_auto:
             }
             if "判斷" in show_df.columns:
                 show_df["_signal_order"] = show_df["判斷"].map(signal_order).fillna(99)
-                show_df["_score_num"] = pd.to_numeric(show_df.get("雷達分數"), errors="coerce").fillna(-999)
+                show_df["_score_num"] = pd.to_numeric(show_df["雷達分數"], errors="coerce").fillna(-999) if "雷達分數" in show_df.columns else -999
                 show_df = show_df.sort_values(["_signal_order", "_score_num"], ascending=[True, False], kind="stable")
                 show_df = show_df.drop(columns=["_signal_order", "_score_num"], errors="ignore")
             st.session_state["auto_table"] = show_df.reset_index(drop=True)
@@ -284,8 +284,8 @@ with tab_auto:
         }
         if not df.empty and "判斷" in df.columns:
             df["_signal_order"] = df["判斷"].map(signal_order).fillna(99)
-            df["_early_num"] = pd.to_numeric(df.get("早期趨勢分"), errors="coerce").fillna(-999)
-            df["_score_num"] = pd.to_numeric(df.get("雷達分數"), errors="coerce").fillna(-999)
+            df["_early_num"] = pd.to_numeric(df["早期趨勢分"], errors="coerce").fillna(-999) if "早期趨勢分" in df.columns else -999
+            df["_score_num"] = pd.to_numeric(df["雷達分數"], errors="coerce").fillna(-999) if "雷達分數" in df.columns else -999
             df = df.sort_values(["_signal_order", "_early_num", "_score_num"], ascending=[True, False, False], kind="stable")
             df = df.drop(columns=["_signal_order", "_early_num", "_score_num"], errors="ignore").reset_index(drop=True)
             st.session_state["auto_table"] = df

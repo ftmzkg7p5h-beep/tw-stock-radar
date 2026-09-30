@@ -117,7 +117,7 @@ with st.sidebar:
     universe=st.selectbox("候選股範圍",["成交金額前 50","成交金額前 100","成交金額前 200","全部市場（較慢）"])
     min_score=st.slider("最低雷達分數",40,90,65)
     only_bull=st.checkbox("只顯示偏多訊號",False)
-    max_scan=st.slider("最多實際分析檔數",20,200,80,step=10)
+    max_scan=st.slider("最多實際分析檔數",20,200,200,step=10)
     st.divider()
     st.caption("⚠️ 分數是規則化研究工具，不是獲利保證，也不代表個人化投資建議。")
 
@@ -255,32 +255,49 @@ with tab_auto:
         rows=[result_row(r) for r in results]
         if rows:
             df=pd.DataFrame(rows).sort_values("雷達分數",ascending=False)
-            if only_bull: df=df[df["判斷"].isin(["🟢 買進條件成立","🔵 突破確認","🟡 等待"])]
-            df=df[df["雷達分數"]>=min_score]
+            if only_bull: df=df[df["判斷"].isin(["🟢 早期佈局","🟢 買進條件成立","🔵 突破確認","🟡 等待"])]
+            # 早期佈局是獨立的提前模型，不應被傳統總分門檻意外過濾掉。
+            total_ok = pd.to_numeric(df["雷達分數"], errors="coerce") >= min_score
+            early_ok = (df["判斷"] == "🟢 早期佈局") & (pd.to_numeric(df["早期趨勢分"], errors="coerce") >= 68)
+            df=df[total_ok | early_ok]
             st.session_state["auto_results"]=results
             st.session_state["auto_table"]=df
             st.success(f"掃描完成：成功分析 {len(results)} 檔，符合目前分數條件 {len(df)} 檔。")
         else: st.error("沒有取得足夠資料，請稍後再試。")
     if "auto_table" in st.session_state:
         df=st.session_state["auto_table"].copy()
-        # 固定訊號優先順序：買進 → 突破 → 等待 → 不追高 → 不買；
-        # 同一訊號內再依雷達分數由高到低，讓手機上也能快速找到重點。
+        # 固定訊號優先順序：先找早期轉強，再看確認型訊號，最後才是不追高/不買。
+        # 同一訊號內優先早期趨勢分，再依雷達分數，讓手機上第一眼就看到「還沒噴」的標的。
         signal_order = {
-            "🟢 買進條件成立": 0,
-            "🔵 突破確認": 1,
-            "🟡 等待": 2,
-            "🟠 不追高": 3,
-            "🔴 不買": 4,
+            "🟢 早期佈局": 0,
+            "🟢 買進條件成立": 1,
+            "🔵 突破確認": 2,
+            "🟡 等待": 3,
+            "🟠 不追高": 4,
+            "🔴 不買": 5,
         }
         if not df.empty and "判斷" in df.columns:
             df["_signal_order"] = df["判斷"].map(signal_order).fillna(99)
+            df["_early_num"] = pd.to_numeric(df.get("早期趨勢分"), errors="coerce").fillna(-999)
             df["_score_num"] = pd.to_numeric(df.get("雷達分數"), errors="coerce").fillna(-999)
-            df = df.sort_values(["_signal_order", "_score_num"], ascending=[True, False], kind="stable")
-            df = df.drop(columns=["_signal_order", "_score_num"], errors="ignore").reset_index(drop=True)
+            df = df.sort_values(["_signal_order", "_early_num", "_score_num"], ascending=[True, False, False], kind="stable")
+            df = df.drop(columns=["_signal_order", "_early_num", "_score_num"], errors="ignore").reset_index(drop=True)
             st.session_state["auto_table"] = df
 
+        early_df = df[df.get("判斷", pd.Series(dtype=str)) == "🟢 早期佈局"].copy() if "判斷" in df.columns else pd.DataFrame()
+        buy_df = df[df.get("判斷", pd.Series(dtype=str)).isin(["🟢 買進條件成立", "🔵 突破確認"])] if "判斷" in df.columns else pd.DataFrame()
+        e1,e2,e3 = st.columns(3)
+        e1.metric("🟢 早期佈局", len(early_df))
+        e2.metric("🟢/🔵 確認型訊號", len(buy_df))
+        if not early_df.empty:
+            top = early_df.head(8)[[c for c in ["代號","名稱","收盤","早期趨勢分","早期條件數","60日位階%","位置距MA20%","20日漲幅%","進場區"] if c in early_df.columns]]
+            st.markdown("### 🟢 最值得先看的早期轉強區")
+            st.dataframe(top, width="stretch", hide_index=True)
+        else:
+            st.info("今天沒有股票同時滿足目前的早期轉強門檻；這不代表市場沒有機會，而是目前規則刻意避免把高檔或弱勢股硬列成早期佈局。")
+
         st.markdown("### 📋 自動選股結果")
-        st.caption("排序：🟢早期佈局 → 🟢買進 → 🔵突破 → 🟡等待 → 🟠不追高 → 🔴不買；同類型再依分數由高到低。點一下股票那一列，下方會完整顯示該檔資料。")
+        st.caption("排序：🟢早期佈局 → 🟢買進 → 🔵突破 → 🟡等待 → 🟠不追高 → 🔴不買；早期區內優先依早期趨勢分排序。點一下股票那一列，下方會完整顯示該檔資料。")
         event = st.dataframe(
             df,
             width="stretch",

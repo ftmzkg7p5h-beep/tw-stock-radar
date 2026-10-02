@@ -446,40 +446,46 @@ with tab_portfolio:
                 cost_to_t2=((t2/cost-1)*100) if cost and pd.notna(t2) else np.nan
                 target1_too_close=bool(pd.notna(cost_to_t1) and cost_to_t1 < 3.0)
 
+                current_to_t1=((t1/price-1)*100) if price and pd.notna(t1) else np.nan
+                current_to_stop=((price/stop-1)*100) if stop and pd.notna(price) else np.nan
+
                 if pd.notna(stop) and price <= stop:
                     status="🔴 出場警示"
-                    reason="跌到／跌破系統防守價，優先處理風險，不再用『等等看』拖延。"
+                    reason="已到／跌破系統防守價。這是風險控制訊號，不是預測股價一定會繼續跌。"
                 elif pd.notna(t2) and price >= t2:
                     status="🟠 目標2達成"
-                    reason="已到第二結構目標區；避免貪心，建議重新評估分批落袋或提高防守線。"
+                    reason="已到第二結構目標區；可重新檢查趨勢與防守線，避免因還可能上漲而失去既有獲利。"
                 elif pd.notna(t1) and price >= t1:
                     status="🟡 第一壓力到達"
-                    reason=(f"已到第一結構壓力，但從你的成本計算僅約{cost_to_t1:.1f}%；"
-                            "這不代表是理想停利點，應觀察是否突破並把防守線往上移。"
-                            if pd.notna(cost_to_t1) else "已到第一結構壓力，建議觀察突破或轉弱。")
+                    reason=(f"現價已到第一結構壓力；從成本看仍有約{cost_to_t1:.1f}%空間。"
+                            "這是壓力區，不是強制賣出點；若突破且量價配合，再重新評估下一目標。"
+                            if pd.notna(cost_to_t1) else "現價已到第一結構壓力，觀察突破或轉弱。")
                 elif r.get("bearish"):
                     patterns="、".join(r.get("bearish",[])[:3])
                     status="🟠 K線出場警戒"
-                    reason=f"偵測到轉弱／反轉型態：{patterns}。這是警戒，不是單一K線就強制賣出；搭配停損、目標與整體雷達判斷。"
+                    reason=f"偵測到轉弱／反轉型態：{patterns}。這是警戒，不代表單一K線就必須賣出；應搭配停損與整體雷達。"
                 elif pnl > 0 and radar.startswith(("🔴", "🟡")):
                     status="⚠️ 獲利部位轉弱"
-                    reason="目前仍有獲利，但雷達已轉為等待／不買；不要因為還在賺錢就忽略條件惡化，可考慮提高防守線。"
+                    reason="目前仍有獲利，但整體雷達轉弱；不要只因為還在賺就忽略趨勢惡化，可重新提高防守線。"
                 elif pd.notna(pnl) and pnl < 0 and target1_too_close:
                     status="🟡 反彈觀察"
-                    reason=(f"目前虧損{abs(pnl):.1f}%，第一結構壓力距成本僅約{cost_to_t1:.1f}%；"
-                            "這只是反彈壓力，不是漂亮的停利目標，等待突破或重新評估風險。")
+                    reason=(f"目前虧損{abs(pnl):.1f}%；最近結構壓力約{t1:.2f}，距離你的成本只有{cost_to_t1:.1f}%，"
+                            f"但距離目前股價約{current_to_t1:.1f}%。因此『反彈觀察』的意思是：先觀察股價能否反彈到壓力並有效突破，"
+                            "不是叫你現在賣，也不是把這個壓力當成漂亮的停利目標。")
                 elif radar == "🟡 等待":
                     status="🟡 持有觀察"
-                    reason="目前沒有觸發停損或出場K線，但雷達尚未重新轉強；持有期間不要追價，也不要因短線反彈就貪心。"
+                    reason="目前沒有觸發停損或明確出場K線，但雷達尚未重新轉強；先觀察支撐、量價與後續雷達變化。"
                 else:
                     status="🟢 持有觀察"
-                    reason="尚未觸發系統停損／目標，也沒有新的K線轉弱警戒；依原計畫持有並等待下一次更新。"
+                    reason="尚未觸發系統停損／目標，也沒有新的K線轉弱警戒；依原風控計畫觀察。"
 
                 positions.append({
                     "代號":code,"名稱":name,"狀態":status,
                     "現價":round(price,2) if pd.notna(price) else np.nan,
                     "成本":cost,"損益%":round(pnl,2) if pd.notna(pnl) else np.nan,"股數":shares,
-                    "停損":stop,"目標1":t1,"目標2":t2,"成本→目標1%":round(cost_to_t1,2) if pd.notna(cost_to_t1) else np.nan,
+                    "停損":stop,"目標1":t1,"目標2":t2,
+                    "現價→目標1%":round(current_to_t1,2) if pd.notna(current_to_t1) else np.nan,
+                    "成本→目標1%":round(cost_to_t1,2) if pd.notna(cost_to_t1) else np.nan,
                     "成本→目標2%":round(cost_to_t2,2) if pd.notna(cost_to_t2) else np.nan,
                     "雷達":radar,"理由":reason
                 })
@@ -492,8 +498,23 @@ with tab_portfolio:
                 order={"🔴 出場警示":0,"🟠 目標2達成":1,"🟡 第一壓力到達":2,"🟠 K線出場警戒":3,"⚠️ 獲利部位轉弱":4,"🟡 反彈觀察":5,"🟡 持有觀察":6,"🟢 持有觀察":7}
                 pdf["_o"]=pdf["狀態"].map(order).fillna(99)
                 pdf=pdf.sort_values(["_o","損益%"],ascending=[True,False]).drop(columns="_o")
-                st.dataframe(pdf, width="stretch", hide_index=True)
-                st.caption(f"資料時間：{inst_date or '最新可取得資料'}。持倉分析會直接針對輸入股票重新計算，不受每日雷達前50／100／200候選池限制。出場警示是規則化風控工具，不是保證性指令。")
+                # 手機橫向表格容易把「理由」推到最右邊；因此摘要表只放關鍵欄位，
+                # 每檔股票再用獨立區塊完整顯示狀態與理由，避免使用者看不到重要訊息。
+                summary_cols=["代號","名稱","狀態","現價","成本","損益%","停損","目標1","目標2","雷達"]
+                st.dataframe(pdf[[c for c in summary_cols if c in pdf.columns]], width="stretch", hide_index=True)
+                for _, pos in pdf.iterrows():
+                    st.markdown(f"### {pos.get('代號','')} {pos.get('名稱','')}｜{pos.get('狀態','')}")
+                    c1,c2,c3,c4=st.columns(4)
+                    c1.metric("現價", f"{num(pos.get('現價')):.2f}" if pd.notna(num(pos.get('現價'))) else "—")
+                    c2.metric("成本", f"{num(pos.get('成本')):.2f}" if pd.notna(num(pos.get('成本'))) else "—")
+                    c3.metric("損益", f"{num(pos.get('損益%')):.2f}%" if pd.notna(num(pos.get('損益%'))) else "—")
+                    c4.metric("現價→目標1", f"{num(pos.get('現價→目標1%')):.2f}%" if pd.notna(num(pos.get('現價→目標1%'))) else "—")
+                    st.info(str(pos.get("理由", "")))
+                    st.caption(
+                        f"停損 {pos.get('停損','—')}｜目標1 {pos.get('目標1','—')}｜目標2 {pos.get('目標2','—')}｜"
+                        f"成本→目標1 {pos.get('成本→目標1%','—')}%｜成本→目標2 {pos.get('成本→目標2%','—')}%"
+                    )
+                st.caption(f"資料時間：{inst_date or '最新可取得資料'}。持倉分析會直接針對輸入股票重新計算，不受每日雷達前50／100／200候選池限制。以上是規則化風控與技術結構判讀，不是保證性指令。")
 
 with tab_detail:
     stocks,inst_map,inst_date,rev_df=get_core_data()

@@ -385,8 +385,8 @@ with tab_search:
 with tab_portfolio:
     st.subheader("🛡️ 持倉／出場管理")
     st.markdown("**目的：已經買進的股票，不只看它會不會漲，也要知道什麼時候該停利、停損，避免一路抱到貪心變回吐。**")
-    st.info("輸入格式：一行一檔，使用空白分隔 `代號 成本價 股數`。例如 `2330 1200 1000`。系統會直接重新抓你輸入股票的最新價格、K線、法人與雷達風控；**不要求它先進每日候選池**。")
-    portfolio_text = st.text_area("目前持倉", placeholder="2330 1200 1000\n2454 980 2000", height=120, key="portfolio_text")
+    st.info("輸入格式：一行一檔，使用逗號分隔 `代號,成本價,股數`。例如 `2330,1200,1000`。系統會直接重新抓你輸入股票的最新價格、K線、法人與雷達風控；**不要求它先進每日候選池**。")
+    portfolio_text = st.text_area("目前持倉", placeholder="2330,1200,1000\n2454,980,2000", height=120, key="portfolio_text")
     if st.button("🔎 檢查持倉／出場訊號", type="primary", width="stretch"):
         # 持倉管理與每日選股完全分離：持有哪一檔，就直接分析哪一檔。
         # 持倉按鈕是獨立入口；若本次 Session 尚未載入核心資料，這裡主動載入，
@@ -403,10 +403,9 @@ with tab_portfolio:
             lines=(portfolio_text or "").splitlines()
 
             for line_no, line in enumerate(lines, 1):
-                # 手機直接空白輸入即可；仍相容 Tab／換行。
-                parts=[x.strip() for x in re.split(r"\s+", line.strip()) if x.strip()]
+                parts=[x.strip() for x in re.split(r"[,，、;；]+", line.strip()) if x.strip()]
                 if len(parts)<3:
-                    if line.strip(): errors.append(f"第 {line_no} 行格式錯誤：請輸入 代號 成本價 股數")
+                    if line.strip(): errors.append(f"第 {line_no} 行格式錯誤：請輸入 代號,成本價,股數")
                     continue
 
                 code=str(parts[0])
@@ -449,6 +448,30 @@ with tab_portfolio:
                 current_to_t1=((t1/price-1)*100) if price and pd.notna(t1) else np.nan
                 current_to_stop=((price/stop-1)*100) if stop and pd.notna(price) else np.nan
 
+                # 已有明顯獲利時，不能繼續只看原始停損；否則像 +130% 的持倉，
+                # 仍可能顯示「持有觀察」，讓大幅獲利回吐。建立「獲利保護線」供持倉管理。
+                d=r.get("data", pd.DataFrame())
+                last=d.iloc[-1] if isinstance(d,pd.DataFrame) and not d.empty else None
+                ma20=num(last.get("MA20")) if last is not None else np.nan
+                atr=num(last.get("ATR14")) if last is not None else np.nan
+                recent_low=np.nan
+                try:
+                    if isinstance(d,pd.DataFrame) and len(d)>=20:
+                        recent_low=float(d["Low"].tail(20).min())
+                except Exception:
+                    recent_low=np.nan
+                profit_protect=np.nan
+                if pd.notna(pnl) and pnl >= 10 and pd.notna(price):
+                    candidates=[]
+                    if pd.notna(stop): candidates.append(float(stop))
+                    # 至少保護一部分既有獲利；同時參考 MA20/ATR 與近20日低點。
+                    candidates.append(float(cost)*1.05)
+                    if pd.notna(ma20) and pd.notna(atr) and atr>0:
+                        candidates.append(float(ma20)-0.75*float(atr))
+                    if pd.notna(recent_low): candidates.append(float(recent_low))
+                    profit_protect=max(candidates) if candidates else np.nan
+                protect_gap=((price/profit_protect-1)*100) if pd.notna(profit_protect) and profit_protect>0 else np.nan
+
                 if pd.notna(stop) and price <= stop:
                     status="🔴 出場警示"
                     reason="已到／跌破系統防守價。這是風險控制訊號，不是預測股價一定會繼續跌。"
@@ -464,9 +487,14 @@ with tab_portfolio:
                     patterns="、".join(r.get("bearish",[])[:3])
                     status="🟠 K線出場警戒"
                     reason=f"偵測到轉弱／反轉型態：{patterns}。這是警戒，不代表單一K線就必須賣出；應搭配停損與整體雷達。"
-                elif pnl > 0 and radar.startswith(("🔴", "🟡")):
+                elif pd.notna(pnl) and pnl >= 30 and radar == "🟠 不追高":
+                    status="🟠 高獲利防守"
+                    reason=(f"目前已有{pnl:.1f}%獲利，但雷達判定為不追高；這時重點不是再追目標，而是保護已經賺到的部位。"
+                            + (f" 目前建議關注獲利保護線約{profit_protect:.2f}，距現價約{protect_gap:.1f}%。" if pd.notna(profit_protect) else ""))
+                elif pd.notna(pnl) and pnl > 0 and radar in ("🔴 不買", "🟡 等待", "🟠 不追高"):
                     status="⚠️ 獲利部位轉弱"
-                    reason="目前仍有獲利，但整體雷達轉弱；不要只因為還在賺就忽略趨勢惡化，可重新提高防守線。"
+                    reason=(f"目前仍有{pnl:.1f}%獲利，但雷達已不是強勢進場訊號；不要只因為還在賺就忽略趨勢惡化。"
+                            + (f" 建議把獲利保護線放在約{profit_protect:.2f}附近，避免大幅回吐。" if pd.notna(profit_protect) else ""))
                 elif pd.notna(pnl) and pnl < 0 and target1_too_close:
                     status="🟡 反彈觀察"
                     reason=(f"目前虧損{abs(pnl):.1f}%；最近結構壓力約{t1:.2f}，距離你的成本只有{cost_to_t1:.1f}%，"
@@ -483,7 +511,7 @@ with tab_portfolio:
                     "代號":code,"名稱":name,"狀態":status,
                     "現價":round(price,2) if pd.notna(price) else np.nan,
                     "成本":cost,"損益%":round(pnl,2) if pd.notna(pnl) else np.nan,"股數":shares,
-                    "停損":stop,"目標1":t1,"目標2":t2,
+                    "停損":stop,"獲利保護線":round(profit_protect,2) if pd.notna(profit_protect) else np.nan,"目標1":t1,"目標2":t2,
                     "現價→目標1%":round(current_to_t1,2) if pd.notna(current_to_t1) else np.nan,
                     "成本→目標1%":round(cost_to_t1,2) if pd.notna(cost_to_t1) else np.nan,
                     "成本→目標2%":round(cost_to_t2,2) if pd.notna(cost_to_t2) else np.nan,
@@ -495,12 +523,12 @@ with tab_portfolio:
 
             if positions:
                 pdf=pd.DataFrame(positions)
-                order={"🔴 出場警示":0,"🟠 目標2達成":1,"🟡 第一壓力到達":2,"🟠 K線出場警戒":3,"⚠️ 獲利部位轉弱":4,"🟡 反彈觀察":5,"🟡 持有觀察":6,"🟢 持有觀察":7}
+                order={"🔴 出場警示":0,"🟠 目標2達成":1,"🟡 第一壓力到達":2,"🟠 K線出場警戒":3,"🟠 高獲利防守":4,"⚠️ 獲利部位轉弱":5,"🟡 反彈觀察":6,"🟡 持有觀察":7,"🟢 持有觀察":8}
                 pdf["_o"]=pdf["狀態"].map(order).fillna(99)
                 pdf=pdf.sort_values(["_o","損益%"],ascending=[True,False]).drop(columns="_o")
                 # 手機橫向表格容易把「理由」推到最右邊；因此摘要表只放關鍵欄位，
                 # 每檔股票再用獨立區塊完整顯示狀態與理由，避免使用者看不到重要訊息。
-                summary_cols=["代號","名稱","狀態","現價","成本","損益%","停損","目標1","目標2","雷達"]
+                summary_cols=["代號","名稱","狀態","現價","成本","損益%","停損","獲利保護線","目標1","目標2","雷達"]
                 st.dataframe(pdf[[c for c in summary_cols if c in pdf.columns]], width="stretch", hide_index=True)
                 for _, pos in pdf.iterrows():
                     st.markdown(f"### {pos.get('代號','')} {pos.get('名稱','')}｜{pos.get('狀態','')}")
@@ -511,7 +539,7 @@ with tab_portfolio:
                     c4.metric("現價→目標1", f"{num(pos.get('現價→目標1%')):.2f}%" if pd.notna(num(pos.get('現價→目標1%'))) else "—")
                     st.info(str(pos.get("理由", "")))
                     st.caption(
-                        f"停損 {pos.get('停損','—')}｜目標1 {pos.get('目標1','—')}｜目標2 {pos.get('目標2','—')}｜"
+                        f"停損 {pos.get('停損','—')}｜獲利保護線 {pos.get('獲利保護線','—')}｜目標1 {pos.get('目標1','—')}｜目標2 {pos.get('目標2','—')}｜"
                         f"成本→目標1 {pos.get('成本→目標1%','—')}%｜成本→目標2 {pos.get('成本→目標2%','—')}%"
                     )
                 st.caption(f"資料時間：{inst_date or '最新可取得資料'}。持倉分析會直接針對輸入股票重新計算，不受每日雷達前50／100／200候選池限制。以上是規則化風控與技術結構判讀，不是保證性指令。")

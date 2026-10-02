@@ -105,6 +105,8 @@ def result_row(r):
         "停損":round(num(s.get("停損參考")),2) if pd.notna(num(s.get("停損參考"))) else np.nan,
         "目標1":round(num(s.get("目標1")),2) if pd.notna(num(s.get("目標1"))) else np.nan,
         "目標2":round(num(s.get("目標2")),2) if pd.notna(num(s.get("目標2"))) else np.nan,
+        "目標1依據":s.get("目標1依據", ""),
+        "目標2依據":s.get("目標2依據", ""),
         "風險報酬":round(num(s.get("風險報酬")),2) if pd.notna(num(s.get("風險報酬"))) else np.nan,
         "第一目標空間%":round(num(s.get("第一目標空間%")),2) if pd.notna(num(s.get("第一目標空間%"))) else np.nan,
         "風險報酬達標":"是" if s.get("風險報酬達標") is True else "否" if s.get("風險報酬達標") is False else "—",
@@ -512,6 +514,7 @@ with tab_portfolio:
                     "現價":round(price,2) if pd.notna(price) else np.nan,
                     "成本":cost,"損益%":round(pnl,2) if pd.notna(pnl) else np.nan,"股數":shares,
                     "停損":stop,"獲利保護線":round(profit_protect,2) if pd.notna(profit_protect) else np.nan,"目標1":t1,"目標2":t2,
+                    "目標1依據":row.get("目標1依據", ""),"目標2依據":row.get("目標2依據", ""),
                     "現價→目標1%":round(current_to_t1,2) if pd.notna(current_to_t1) else np.nan,
                     "成本→目標1%":round(cost_to_t1,2) if pd.notna(cost_to_t1) else np.nan,
                     "成本→目標2%":round(cost_to_t2,2) if pd.notna(cost_to_t2) else np.nan,
@@ -539,7 +542,7 @@ with tab_portfolio:
                     c4.metric("現價→目標1", f"{num(pos.get('現價→目標1%')):.2f}%" if pd.notna(num(pos.get('現價→目標1%'))) else "—")
                     st.info(str(pos.get("理由", "")))
                     st.caption(
-                        f"停損 {pos.get('停損','—')}｜獲利保護線 {pos.get('獲利保護線','—')}｜目標1 {pos.get('目標1','—')}｜目標2 {pos.get('目標2','—')}｜"
+                        f"停損 {pos.get('停損','—')}｜獲利保護線 {pos.get('獲利保護線','—')}｜目標1 {pos.get('目標1','—')}（{pos.get('目標1依據','')}）｜目標2 {pos.get('目標2','—')}（{pos.get('目標2依據','')}）｜"
                         f"成本→目標1 {pos.get('成本→目標1%','—')}%｜成本→目標2 {pos.get('成本→目標2%','—')}%"
                     )
                 st.caption(f"資料時間：{inst_date or '最新可取得資料'}。持倉分析會直接針對輸入股票重新計算，不受每日雷達前50／100／200候選池限制。以上是規則化風控與技術結構判讀，不是保證性指令。")

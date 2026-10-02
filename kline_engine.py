@@ -333,11 +333,31 @@ def score(d,bullish,bearish,institution_total=np.nan,institution_5d=np.nan,insti
         resistance.append(float(last.BBUpper))
 
     resistance=sorted(set(round(x, 6) for x in resistance))
-    # 第一目標採最近的結構壓力；如果最近壓力離得太近，不能把它硬包裝成高報酬買點。
-    target1=resistance[0] if resistance else close+3.0*atr
-    # 第二目標找下一個壓力；不足時才使用較遠的 ATR 延伸。
-    higher=[x for x in resistance if x > target1*1.003]
-    target2=higher[0] if higher else max(close+4.5*atr, target1+1.5*atr)
+
+    # 目標價格不能直接把 60 日以前的遠端高點當成「近期目標」。
+    # 例如現價 624，若把很久以前的 948 直接當目標1，會讓持倉管理失真。
+    # 這裡把壓力分成「近期可交易壓力」與「遠端壓力」：
+    # - 目標1：優先使用現價上方 15% 內的最近壓力；沒有就用 ATR 合理延伸。
+    # - 目標2：優先使用現價上方 30% 內、且高於目標1的下一個壓力；沒有就用 ATR 延伸。
+    # - 遠端歷史高點只保留給趨勢參考，不直接拿來當近期目標。
+    near_resistance=[x for x in resistance if close*1.005 < x <= close*1.15]
+    mid_resistance=[x for x in resistance if close*1.005 < x <= close*1.30]
+
+    if near_resistance:
+        target1=near_resistance[0]
+        target1_basis="近期壓力"
+    else:
+        target1=close+3.0*atr
+        target1_basis="3ATR延伸"
+
+    higher=[x for x in mid_resistance if x > target1*1.003]
+    if higher:
+        target2=higher[0]
+        target2_basis="下一壓力"
+    else:
+        target2=max(close+5.0*atr, target1+1.5*atr)
+        target2_basis="5ATR延伸"
+
     rr=(target1-close)/risk if close>stop else np.nan
     reward_space_pct=(target1/close-1)*100 if close>0 else np.nan
     rr_ok=bool(pd.notna(rr) and rr>=2.0)
@@ -377,7 +397,8 @@ def score(d,bullish,bearish,institution_total=np.nan,institution_5d=np.nan,insti
         "理由":reasons[:8],"風險":risks[:8],"早期理由":early_reasons[:10],"早期風險":early_risks[:8],
         "技術分":technical,"籌碼分":chip,"基本面分":fundamental,
         "ATR14":atr,"進場參考":close,"進場區下緣":entry_zone_low,"進場區上緣":entry_zone_high,
-        "停損參考":stop,"目標1":target1,"目標2":target2,"風險報酬":rr,"第一目標空間%":reward_space_pct,
+        "停損參考":stop,"目標1":target1,"目標2":target2,"目標1依據":target1_basis,"目標2依據":target2_basis,
+        "風險報酬":rr,"第一目標空間%":reward_space_pct,
         "風險報酬達標":rr_ok,"空間不足":space_block,"突破確認":breakout,
         "位置距MA20%":dist20,"20日漲幅%":ret20,"60日位階%":pos60,"量能比5日均量":vr,
     }

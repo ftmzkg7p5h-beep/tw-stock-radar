@@ -294,26 +294,6 @@ def score(d,bullish,bearish,institution_total=np.nan,institution_5d=np.nan,insti
     breakout=any(x in bullish for x in ["突破前高","布林突破"])
     overheat=(pd.notna(rsi) and rsi>=72) or dist20>10 or (pd.notna(ret20) and ret20>15) or (pd.notna(pos60) and pos60>88)
 
-    # 早期訊號不再被「總分」卡死；但至少要有多個獨立早期條件成立。
-    early_ready=(early>=68 and setup_count>=3 and not breakout and not overheat)
-    if overheat:
-        signal="🟠 不追高"; action="趨勢可能仍強，但位置已偏高；等待拉回到低風險區，不追最後一段"
-    elif space_block and (early_ready or total>=75):
-        signal="🟡 等待"; action="上方第一壓力距離太近，預期報酬不足2R；等拉回降低成本或突破後重新評估，不在這裡追買"
-    elif early_ready:
-        signal="🟢 早期佈局"; action="尚未明顯過熱，已有多個領先條件同步改善，且第一目標至少具2R空間"
-    elif total>=85 and rr_ok:
-        signal="🟢 買進條件成立"; action="趨勢、籌碼與基本面同時偏多，且第一目標至少具2R空間；仍需依停損執行"
-    elif total>=75 and breakout and rr_ok:
-        signal="🔵 突破確認"; action="突破型態成立且風險報酬達標；確認量能與停損後再處理"
-    elif total>=68:
-        signal="🟡 等待"; action="條件尚未完整，等待拉回支撐、突破確認或更好的風險報酬"
-    else:
-        signal="🔴 不買"; action="目前訊號偏弱，不以單一指標逆勢進場"
-
-    if total<50 and not early_ready and not overheat:
-        signal="🔴 不買"; action="目前趨勢與早期轉強條件都不足"
-
     # ---------- Reward / Risk Gate v4.4 ----------
     # 不能因為「可能會漲」就把一檔上方只剩 1~2% 空間的股票列為買進。
     # 先找實際價格結構上的壓力位，再計算第一目標；若第一壓力太近，
@@ -352,6 +332,27 @@ def score(d,bullish,bearish,institution_total=np.nan,institution_5d=np.nan,insti
     space_block=not rr_ok
     if space_block:
         early_risks.append(f"上方第一壓力僅約{reward_space_pct:.1f}%；不足2R")
+
+    # 早期訊號不再被「總分」卡死；但至少要有多個獨立早期條件成立。
+    early_ready=(early>=68 and setup_count>=3 and not breakout and not overheat)
+    if overheat:
+        signal="🟠 不追高"; action="趨勢可能仍強，但位置已偏高；等待拉回到低風險區，不追最後一段"
+    elif space_block and (early_ready or total>=75):
+        signal="🟡 等待"; action="上方第一壓力距離太近，預期報酬不足2R；等拉回降低成本或突破後重新評估，不在這裡追買"
+    elif early_ready:
+        signal="🟢 早期佈局"; action="尚未明顯過熱，已有多個領先條件同步改善，且第一目標至少具2R空間"
+    elif total>=85 and rr_ok:
+        signal="🟢 買進條件成立"; action="趨勢、籌碼與基本面同時偏多，且第一目標至少具2R空間；仍需依停損執行"
+    elif total>=75 and breakout and rr_ok:
+        signal="🔵 突破確認"; action="突破型態成立且風險報酬達標；確認量能與停損後再處理"
+    elif total>=68:
+        signal="🟡 等待"; action="條件尚未完整，等待拉回支撐、突破確認或更好的風險報酬"
+    else:
+        signal="🔴 不買"; action="目前訊號偏弱，不以單一指標逆勢進場"
+
+    if total<50 and not early_ready and not overheat:
+        signal="🔴 不買"; action="目前趨勢與早期轉強條件都不足"
+
     return {
         "分數":total,"早期趨勢分":early,"早期條件數":setup_count,"訊號":signal,"動作":action,
         "理由":reasons[:8],"風險":risks[:8],"早期理由":early_reasons[:10],"早期風險":early_risks[:8],

@@ -33,3 +33,9 @@ Main file: `app.py`
 ## V4.4.1 修正
 - 修正 `kline_engine.py` 中風險報酬閘門變數在計算前被引用，造成 `UnboundLocalError`。
 - 風險報酬與第一目標先計算，再進行訊號分類。
+
+
+## V4.4.2 修正
+- 修正 `kline_engine.score()` 在部分每日快取資料缺少/異常 `ATR14` 時的 ATR 取得方式。
+- ATR 改為安全讀取並提供價格比例 fallback，避免 `UnboundLocalError`。
+- 保留 V4.4 的 2R 風險報酬閘門與早期趨勢邏輯。

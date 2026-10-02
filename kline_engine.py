@@ -163,7 +163,13 @@ def score(d,bullish,bearish,institution_total=np.nan,institution_5d=np.nan,insti
     ma10=float(last.MA10) if pd.notna(last.MA10) else close
     ma20=float(last.MA20) if pd.notna(last.MA20) else close
     ma60=float(last.MA60) if pd.notna(last.MA60) else close
-    atr=float(last.ATR14) if pd.notna(last.ATR14) and float(last.ATR14)>0 else max(close*0.02,0.01)
+    # ATR 必須先安全取得；每日快取/部分股票可能沒有 ATR14 欄位。
+    # 不直接使用 last.ATR14，避免欄位缺失或資料型別異常造成 UnboundLocalError / AttributeError。
+    try:
+        atr_raw = last.get("ATR14", np.nan)
+        atr = float(atr_raw) if pd.notna(atr_raw) and float(atr_raw) > 0 else max(close * 0.02, 0.01)
+    except (TypeError, ValueError):
+        atr = max(close * 0.02, 0.01)
     rsi=float(last.RSI) if pd.notna(last.RSI) else np.nan
 
     if pd.notna(last.MA20): technical += 5 if close>ma20 else -5

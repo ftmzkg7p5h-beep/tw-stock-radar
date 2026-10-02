@@ -170,7 +170,14 @@ def score(d,bullish,bearish,institution_total=np.nan,institution_5d=np.nan,insti
         atr = float(atr_raw) if pd.notna(atr_raw) and float(atr_raw) > 0 else max(close * 0.02, 0.01)
     except (TypeError, ValueError):
         atr = max(close * 0.02, 0.01)
-    rsi=float(last.RSI) if pd.notna(last.RSI) else np.nan
+    # RSI 一律先初始化，避免部分快取/資料欄位異常時出現 UnboundLocalError
+    rsi = np.nan
+    try:
+        rsi_raw = last.get("RSI", np.nan)
+        if pd.notna(rsi_raw):
+            rsi = float(rsi_raw)
+    except (TypeError, ValueError):
+        rsi = np.nan
 
     if pd.notna(last.MA20): technical += 5 if close>ma20 else -5
     if pd.notna(rsi):
@@ -231,7 +238,13 @@ def score(d,bullish,bearish,institution_total=np.nan,institution_5d=np.nan,insti
         slope5=slope20=0
 
     # D. RSI抓「從低中位往上」，不是等到75才追。
-    rsi_prev=float(prev.RSI) if pd.notna(prev.RSI) else np.nan
+    rsi_prev = np.nan
+    try:
+        rsi_prev_raw = prev.get("RSI", np.nan)
+        if pd.notna(rsi_prev_raw):
+            rsi_prev = float(rsi_prev_raw)
+    except (TypeError, ValueError):
+        rsi_prev = np.nan
     if pd.notna(rsi):
         if 42<=rsi<=60 and (pd.isna(rsi_prev) or rsi>=rsi_prev):
             early += 10; early_reasons.append("RSI低中位向上"); setup_flags.append("動能")

@@ -1,5 +1,8 @@
 import re
 import json
+import time
+import xml.etree.ElementTree as ET
+from urllib.parse import quote_plus
 from pathlib import Path
 import numpy as np
 import pandas as pd
@@ -184,7 +187,7 @@ def load_daily_radar_cache():
         return pd.DataFrame(), ""
 
 # ---------- Tabs ----------
-tab_auto,tab_search,tab_portfolio,tab_detail,tab_fin,tab_patterns=st.tabs(["🚀 自動選股","🔎 個股查詢","🛡️ 持倉/出場","📊 詳細分析","📑 財報/法人","🕯️ K線型態庫"])
+tab_auto,tab_search,tab_industry,tab_portfolio,tab_detail,tab_fin,tab_patterns=st.tabs(["🚀 自動選股","🔎 個股查詢","🌐 產業趨勢","🛡️ 持倉/出場","📊 詳細分析","📑 財報/法人","🕯️ K線型態庫"])
 
 with tab_auto:
     st.subheader("🚀 全自動選股")
@@ -358,6 +361,140 @@ with tab_auto:
             st.markdown("### 自動選股解讀")
             st.write("**🟢 早期佈局**＝尚未明顯過熱，但多個領先條件正在改善；**🟢 買進條件成立**＝主要條件同時偏多；**🔵 突破確認**＝突破型態成立；**🟡 等待**＝條件尚未完整；**🔴 不買**＝目前條件偏弱；**🟠 不追高**＝位置過熱。")
             st.caption("排序只是依照本工具的規則分組與分數排序，不代表未來報酬排名。現在買進訊號另加 2R 風險報酬閘門：上方第一壓力空間不足時，不會因分數高就硬列買進。")
+
+# ---------- Industry Trend Radar ----------
+INDUSTRY_THEMES = {
+    "記憶體／儲存": {
+        "queries": ["記憶體 DRAM NAND 報價 供需", "HBM 記憶體 供應鏈 台灣"],
+        "thesis": "追蹤 DRAM、NAND、HBM 供需、報價與庫存變化；要再確認公司實際產品組合與獲利貢獻。",
+        "companies": {
+            "2408": ("南亞科", "DRAM 記憶體製造"), "2344": ("華邦電", "利基型記憶體／快閃記憶體"),
+            "2337": ("旺宏", "非揮發性記憶體"), "8299": ("群聯", "NAND 控制晶片／儲存方案"),
+            "3260": ("威剛", "記憶體模組／儲存產品"), "4967": ("十銓", "記憶體模組／儲存產品"),
+            "3006": ("晶豪科", "記憶體相關 IC"), "8271": ("宇瞻", "工業用記憶體／儲存產品")
+        }
+    },
+    "電力／能源設備": {
+        "queries": ["台灣 電力設備 變壓器 訂單 供應鏈", "AI 資料中心 用電 電網 儲能"],
+        "thesis": "追蹤電網更新、變壓器交期、資料中心用電與儲能投資；要核對訂單能見度、產能與毛利率。",
+        "companies": {
+            "1513": ("中興電", "電力設備／氣體絕緣開關設備"), "1519": ("華城", "變壓器／電力設備"),
+            "1503": ("士電", "重電／配電設備"), "1514": ("亞力", "電力工程／配電設備"),
+            "1605": ("華新", "電線電纜／材料"), "1609": ("大亞", "電線電纜／能源相關"),
+            "2308": ("台達電", "電源管理／電力電子"), "1517": ("利奇", "電力與機電相關；需核對實際受惠程度")
+        }
+    },
+    "AI 伺服器／散熱": {
+        "queries": ["AI 伺服器 台灣 供應鏈 訂單", "AI server 散熱 電源 供應鏈 台灣"],
+        "thesis": "追蹤雲端資本支出、伺服器出貨、散熱與電源需求；需確認公司實際客戶、產品占比與估值。",
+        "companies": {
+            "2382": ("廣達", "伺服器／雲端硬體製造"), "2317": ("鴻海", "伺服器／電子製造服務"),
+            "6669": ("緯穎", "雲端伺服器"), "3231": ("緯創", "伺服器／資訊硬體"),
+            "3017": ("奇鋐", "散熱／熱管理"), "3324": ("雙鴻", "散熱／熱管理"),
+            "2308": ("台達電", "電源管理／電力電子"), "2376": ("技嘉", "伺服器／運算硬體"),
+            "2356": ("英業達", "伺服器／資訊硬體"), "3665": ("貿聯-KY", "高速連接／線束")
+        }
+    },
+    "半導體／先進封裝": {
+        "queries": ["台灣 半導體 先進封裝 擴產 設備 訂單", "CoWoS 先進封裝 供應鏈 台灣"],
+        "thesis": "追蹤先進封裝產能、設備與材料需求；新聞題材需由公司公告、營收與資本支出交叉驗證。",
+        "companies": {
+            "2330": ("台積電", "晶圓代工／先進製程與封裝"), "3711": ("日月光投控", "封裝測試"),
+            "2449": ("京元電子", "晶圓測試／測試服務"), "6239": ("力成", "封裝測試"),
+            "3583": ("辛耘", "半導體設備／製程服務"), "3131": ("弘塑", "半導體濕製程設備"),
+            "3037": ("欣興", "載板／PCB"), "8046": ("南電", "IC 載板"),
+            "2368": ("金像電", "高階 PCB")
+        }
+    }
+}
+
+@st.cache_data(ttl=1800, show_spinner=False)
+def industry_news(query, limit=6):
+    """Google News RSS keyword discovery. News is a lead, not proof of a company's exposure."""
+    import requests
+    url = "https://news.google.com/rss/search?q=" + quote_plus(query + " when:14d") + "&hl=zh-TW&gl=TW&ceid=TW:zh-Hant"
+    try:
+        resp = requests.get(url, timeout=8, headers={"User-Agent":"Mozilla/5.0"})
+        resp.raise_for_status()
+        root = ET.fromstring(resp.content)
+        items=[]
+        for item in root.findall("./channel/item")[:limit]:
+            title=item.findtext("title", default="").strip()
+            link=item.findtext("link", default="").strip()
+            pub=item.findtext("pubDate", default="").strip()
+            source=item.findtext("source", default="新聞來源未標示").strip()
+            if title and link: items.append({"標題":title,"來源":source,"發布時間":pub,"連結":link})
+        return items
+    except Exception:
+        return []
+
+with tab_industry:
+    st.subheader("🌐 產業趨勢雷達")
+    st.markdown("**先發現需求變化，再驗證哪些台灣公司真正受惠，最後才判斷股價位置。**")
+    st.info("新聞只用來發現線索；供應鏈關聯是初步分類，不代表公司一定受惠或股價一定上漲。請以公司公告、營收與實際訂單交叉驗證。")
+    theme_name = st.selectbox("選擇產業主題", list(INDUSTRY_THEMES.keys()), key="industry_theme")
+    theme = INDUSTRY_THEMES[theme_name]
+    st.markdown("#### 這個主題要觀察什麼")
+    st.write(theme["thesis"])
+    st.markdown("#### 📰 近期新聞線索（最近約 14 天）")
+    news_key=f"industry_news_{theme_name}"
+    if st.button("📰 更新此主題近期新聞", key="refresh_industry_news", width="stretch"):
+        news_items=[]
+        with st.spinner("正在查詢近期產業新聞…"):
+            for query in theme["queries"]:
+                news_items.extend(industry_news(query, 5))
+        seen=set(); news_items=[x for x in news_items if not (x["連結"] in seen or seen.add(x["連結"]))]
+        st.session_state[news_key]=news_items
+    news_items=st.session_state.get(news_key, [])
+    if news_items:
+        for item in news_items[:8]:
+            st.markdown(f"- [{item['標題']}]({item['連結']})")
+            st.caption(f"{item['來源']}｜{item['發布時間']}")
+    else:
+        st.caption("尚未查詢新聞。按上方按鈕才會連線查詢，避免每次開啟 App 都額外載入新聞。")
+
+    st.markdown("#### 🔗 台灣供應鏈追蹤名單")
+    st.caption("名單是研究起點，不是買進名單。按下分析後才會抓取個股價格、K 線、法人與營收，避免頁面一打開就大量請求資料。")
+    max_names = st.slider("本次分析檔數", min_value=5, max_value=len(theme["companies"]), value=min(8, len(theme["companies"])), key="industry_max_names")
+    if st.button("🔍 分析此產業供應鏈", type="primary", width="stretch", key="run_industry_scan"):
+        with st.spinner("載入最新可取得的台股、法人與營收資料…"):
+            stocks_i, inst_i, inst_date_i, rev_i = load_core_data()
+        if stocks_i is None or stocks_i.empty:
+            st.error("目前抓不到台股清單，請稍後再試。")
+        else:
+            names_i = dict(zip(stocks_i["代號"].astype(str), stocks_i["名稱"].astype(str)))
+            candidates=list(theme["companies"].items())[:max_names]
+            bulk_i=institutional_bulk_summary([code for code,_ in candidates], days=5)
+            rows=[]; bar=st.progress(0)
+            for i,(code,(fallback_name,role)) in enumerate(candidates):
+                try:
+                    result=analyze(code, names_i.get(code, fallback_name), inst_i, rev_i, bulk_i.get(code))
+                    if result:
+                        row=result_row(result)
+                        row["供應鏈角色"]=role
+                        row["營收YoY%"] = num(result.get("revenue",{}).get("YoY"))
+                        row["新聞／題材驗證"]="需核對公司公告與實際營收"
+                        rows.append(row)
+                except Exception as exc:
+                    rows.append({"代號":code,"名稱":names_i.get(code,fallback_name),"供應鏈角色":role,"資料狀態":f"分析失敗：{type(exc).__name__}"})
+                bar.progress((i+1)/len(candidates))
+            bar.empty()
+            if rows:
+                result_df=pd.DataFrame(rows)
+                if "雷達分數" in result_df.columns:
+                    result_df["_score"] = pd.to_numeric(result_df["雷達分數"],errors="coerce")
+                    result_df=result_df.sort_values("_score",ascending=False,na_position="last").drop(columns="_score")
+                st.session_state["industry_scan_result"]=(theme_name,result_df,inst_date_i)
+            else:
+                st.warning("目前未取得足夠的個股行情資料。")
+    saved_industry=st.session_state.get("industry_scan_result")
+    if saved_industry and saved_industry[0] == theme_name:
+        _, result_df, inst_date_i = saved_industry
+        st.markdown("#### 📊 供應鏈個股檢查結果")
+        st.caption(f"法人資料最近可用日：{inst_date_i or '未取得'}。行情／營收欄位可能因來源延遲或缺值而不完整。")
+        show_cols=[c for c in ["代號","名稱","供應鏈角色","收盤","漲跌%","營收YoY%","法人買賣超(張)","法人5日(張)","早期趨勢分","60日位階%","20日漲幅%","判斷","動作","進場區","停損","目標1","目標2","新聞／題材驗證","資料狀態"] if c in result_df.columns]
+        st.dataframe(result_df[show_cols], width="stretch", hide_index=True)
+        st.caption("解讀方式：先找『產業有需求證據＋公司基本面改善＋股價未過熱』的交集。僅有新聞、股價大跌或雷達分數高，任何單一條件都不足以構成買進理由。")
 
 with tab_search:
     st.subheader("🔎 查詢指定個股")

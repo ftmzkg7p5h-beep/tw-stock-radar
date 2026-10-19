@@ -48,3 +48,10 @@ Main file: `app.py`
 - +5%～+15% 最低鎖住約 +3%；+15%～+30% 最低鎖住約 +5%；+30% 以上最低鎖住約 +10%。
 - 保護線只接受有效、低於現價的數值，避免顯示 nan。
 - 跌破停損／獲利保護線才進入明確「🔴 出場」；K線轉弱或到目標則先列「🟠 出場準備」。
+
+## V4.4.9 Industry Trend Radar
+
+- Added a `🌐 產業趨勢` tab without removing the existing auto-screening, individual lookup, holdings/exit management, detailed analysis, financial/institutional data, or candlestick pattern tabs.
+- Themes include memory/storage, power/energy equipment, AI servers/cooling, and semiconductor/advanced packaging.
+- Recent news is fetched only when the user presses the news refresh button; headlines are discovery leads, not proof of company exposure.
+- Supply-chain mappings are an initial research list. Use the in-app price/K-line, revenue and institutional data to cross-check; no theme or score is a guaranteed buy signal.

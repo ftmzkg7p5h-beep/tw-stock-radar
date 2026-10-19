@@ -1,79 +1,79 @@
 {
-  "updated_at": "2026-10-06T02:24:12+00:00",
-  "total_signals": 769,
+  "updated_at": "2026-10-19T02:10:03+00:00",
+  "total_signals": 968,
   "by_signal": {
     "🟢 早期佈局": {
-      "count": 47,
-      "5d_count": 0,
-      "5d_positive_rate": null,
-      "5d_avg_return": null
+      "count": 49,
+      "5d_count": 47,
+      "5d_positive_rate": 72.34,
+      "5d_avg_return": 2.26
     },
     "🟢 買進條件成立": {
       "count": 48,
-      "5d_count": 27,
-      "5d_positive_rate": 77.78,
-      "5d_avg_return": 7.62
+      "5d_count": 48,
+      "5d_positive_rate": 72.92,
+      "5d_avg_return": 6.82
     },
     "🔵 突破確認": {
       "count": 5,
-      "5d_count": 1,
-      "5d_positive_rate": 100.0,
-      "5d_avg_return": 4.13
+      "5d_count": 5,
+      "5d_positive_rate": 80.0,
+      "5d_avg_return": 2.75
     },
     "🟡 等待": {
-      "count": 189,
-      "5d_count": 45,
-      "5d_positive_rate": 73.33,
-      "5d_avg_return": 6.56
+      "count": 229,
+      "5d_count": 189,
+      "5d_positive_rate": 57.67,
+      "5d_avg_return": 2.65
     },
     "🟠 不追高": {
-      "count": 290,
-      "5d_count": 18,
-      "5d_positive_rate": 77.78,
-      "5d_avg_return": 3.72
+      "count": 350,
+      "5d_count": 290,
+      "5d_positive_rate": 49.31,
+      "5d_avg_return": 0.99
     },
     "🔴 不買": {
-      "count": 190,
-      "5d_count": 69,
-      "5d_positive_rate": 86.96,
-      "5d_avg_return": 8.29
+      "count": 287,
+      "5d_count": 190,
+      "5d_positive_rate": 74.21,
+      "5d_avg_return": 5.52
     }
   },
   "by_score": {
     "90-100": {
-      "count": 148,
-      "5d_count": 31,
-      "5d_positive_rate": 77.42,
-      "5d_avg_return": 7.32
+      "count": 173,
+      "5d_count": 148,
+      "5d_positive_rate": 56.76,
+      "5d_avg_return": 3.65
     },
     "80-89": {
-      "count": 99,
-      "5d_count": 19,
-      "5d_positive_rate": 84.21,
-      "5d_avg_return": 4.78
+      "count": 113,
+      "5d_count": 99,
+      "5d_positive_rate": 58.59,
+      "5d_avg_return": 2.45
     },
     "70-79": {
-      "count": 152,
-      "5d_count": 33,
-      "5d_positive_rate": 66.67,
-      "5d_avg_return": 5.68
+      "count": 175,
+      "5d_count": 152,
+      "5d_positive_rate": 54.61,
+      "5d_avg_return": 1.77
     },
     "0-69": {
-      "count": 370,
-      "5d_count": 77,
-      "5d_positive_rate": 87.01,
-      "5d_avg_return": 8.3
+      "count": 507,
+      "5d_count": 370,
+      "5d_positive_rate": 65.14,
+      "5d_avg_return": 3.33
     }
   },
   "1日報酬%": {
-    "count": 570,
-    "positive_rate": 57.19,
-    "avg_return": 1.38
+    "count": 769,
+    "positive_rate": 55.92,
+    "avg_return": 1.13
   },
   "5日報酬%": {
-    "count": 160,
-    "positive_rate": 80.62,
-    "avg_return": 7.15
+    "count": 769,
+    "positive_rate": 60.6,
+    "avg_return": 2.97
   },
   "20日報酬%": {
     "count": 0,

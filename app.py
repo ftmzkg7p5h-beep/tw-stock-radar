@@ -409,6 +409,54 @@ INDUSTRY_THEMES = {
 }
 
 @st.cache_data(ttl=1800, show_spinner=False)
+def industry_opportunity(row):
+    """Transparent screening score: price weakness alone is never a buy signal.
+    Scores only available market/fundamental proxies; it does not claim to prove supply shortage.
+    """
+    score = 0.0
+    evidence = []
+    risks = []
+    # Revenue momentum proxy
+    yoy = num(row.get("營收YoY%"))
+    if pd.notna(yoy):
+        if yoy >= 20: score += 25; evidence.append(f"營收年增 {yoy:.1f}%")
+        elif yoy >= 5: score += 17; evidence.append(f"營收年增 {yoy:.1f}%")
+        elif yoy > 0: score += 10; evidence.append(f"營收年增 {yoy:.1f}%")
+        else: score += 2; risks.append("營收年增未轉正")
+    else:
+        risks.append("營收年增資料不足")
+    # Institutional flow proxy
+    inst5 = num(row.get("法人5日(張)"))
+    if pd.notna(inst5):
+        if inst5 > 0: score += 15; evidence.append("近5日法人買超")
+        else: risks.append("近5日法人未買超")
+    else:
+        risks.append("法人資料不足")
+    # Price location: avoid chasing; a pullback only adds points if it is not an uncontrolled collapse.
+    pos = num(row.get("60日位階%")); ret20 = num(row.get("20日漲幅%")); dist = num(row.get("位置距MA20%"))
+    if pd.notna(pos) and 20 <= pos <= 65: score += 15; evidence.append("60日位階非高檔")
+    elif pd.notna(pos) and pos < 20: score += 8; risks.append("位階很低，需確認止跌")
+    elif pd.notna(pos) and pos > 85: risks.append("接近60日高檔，留意追高")
+    if pd.notna(ret20):
+        if -12 <= ret20 <= 3: score += 15; evidence.append("近20日回檔／整理")
+        elif ret20 < -12: score += 4; risks.append("近20日跌幅大，可能仍在下跌趨勢")
+        elif ret20 > 15: risks.append("近20日漲幅偏大")
+    if pd.notna(dist) and -8 <= dist <= 3: score += 10; evidence.append("股價靠近MA20區域")
+    # The technical model contributes only a limited amount; it must not dominate the industry thesis.
+    early = num(row.get("早期趨勢分"))
+    if pd.notna(early): score += min(15, max(0, early - 50) * 0.3)
+    rr = num(row.get("風險報酬"))
+    if pd.notna(rr) and rr >= 2: score += 10; evidence.append("風險報酬達2R")
+    score = int(round(min(100, score)))
+    if score >= 65 and not any("跌幅大" in x or "追高" in x for x in risks):
+        label = "🟢 優先研究：基本面與位置較合適"
+    elif score >= 45:
+        label = "🟡 觀察：等待更多證據／止穩"
+    else:
+        label = "⚪ 證據不足：暫不列入優先名單"
+    return score, label, "；".join(evidence) if evidence else "目前沒有足夠正向證據", "；".join(risks) if risks else "未見此模型標記的主要風險"
+
+
 def industry_news(query, limit=6):
     """Google News RSS keyword discovery. News is a lead, not proof of a company's exposure."""
     import requests
@@ -473,7 +521,13 @@ with tab_industry:
                         row=result_row(result)
                         row["供應鏈角色"]=role
                         row["營收YoY%"] = num(result.get("revenue",{}).get("YoY"))
-                        row["新聞／題材驗證"]="需核對公司公告與實際營收"
+                        row["新聞／題材驗證"]="新聞只作線索；需以公司公告、法說與營收確認實際受惠"
+                        opp_score, opp_label, opp_evidence, opp_risks = industry_opportunity(row)
+                        row["產業機會分數"] = opp_score
+                        row["產業機會判斷"] = opp_label
+                        row["支持證據"] = opp_evidence
+                        row["主要風險"] = opp_risks
+                        row["資料完整度"] = "行情/營收/法人均有資料" if pd.notna(num(row.get("營收YoY%"))) and pd.notna(num(row.get("法人5日(張)"))) else "部分資料缺漏；分數可信度降低"
                         rows.append(row)
                 except Exception as exc:
                     rows.append({"代號":code,"名稱":names_i.get(code,fallback_name),"供應鏈角色":role,"資料狀態":f"分析失敗：{type(exc).__name__}"})
@@ -481,9 +535,9 @@ with tab_industry:
             bar.empty()
             if rows:
                 result_df=pd.DataFrame(rows)
-                if "雷達分數" in result_df.columns:
-                    result_df["_score"] = pd.to_numeric(result_df["雷達分數"],errors="coerce")
-                    result_df=result_df.sort_values("_score",ascending=False,na_position="last").drop(columns="_score")
+                if "產業機會分數" in result_df.columns:
+                    result_df["_opportunity"] = pd.to_numeric(result_df["產業機會分數"],errors="coerce")
+                    result_df=result_df.sort_values("_opportunity",ascending=False,na_position="last").drop(columns="_opportunity")
                 st.session_state["industry_scan_result"]=(theme_name,result_df,inst_date_i)
             else:
                 st.warning("目前未取得足夠的個股行情資料。")
@@ -492,9 +546,17 @@ with tab_industry:
         _, result_df, inst_date_i = saved_industry
         st.markdown("#### 📊 供應鏈個股檢查結果")
         st.caption(f"法人資料最近可用日：{inst_date_i or '未取得'}。行情／營收欄位可能因來源延遲或缺值而不完整。")
-        show_cols=[c for c in ["代號","名稱","供應鏈角色","收盤","漲跌%","營收YoY%","法人買賣超(張)","法人5日(張)","早期趨勢分","60日位階%","20日漲幅%","判斷","動作","進場區","停損","目標1","目標2","新聞／題材驗證","資料狀態"] if c in result_df.columns]
+        if "產業機會分數" in result_df.columns:
+            best = result_df[result_df["產業機會判斷"].astype(str).str.startswith("🟢")]
+            watch = result_df[result_df["產業機會判斷"].astype(str).str.startswith("🟡")]
+            a,b,c = st.columns(3)
+            a.metric("🟢 優先研究", len(best))
+            b.metric("🟡 觀察等待", len(watch))
+            c.metric("分析公司", len(result_df))
+            st.caption("產業機會分數是透明的初篩排序，使用營收年增、法人近5日、股價位階、20日變化、距MA20及風險報酬等可取得資料；不是預測報酬，也不能證明產業供需缺口。缺少資料會降低可信度。")
+        show_cols=[c for c in ["代號","名稱","供應鏈角色","產業機會分數","產業機會判斷","支持證據","主要風險","資料完整度","收盤","漲跌%","營收YoY%","法人買賣超(張)","法人5日(張)","早期趨勢分","60日位階%","20日漲幅%","判斷","動作","進場區","停損","目標1","目標2","新聞／題材驗證","資料狀態"] if c in result_df.columns]
         st.dataframe(result_df[show_cols], width="stretch", hide_index=True)
-        st.caption("解讀方式：先找『產業有需求證據＋公司基本面改善＋股價未過熱』的交集。僅有新聞、股價大跌或雷達分數高，任何單一條件都不足以構成買進理由。")
+        st.caption("判讀原則：產業前景好 ≠ 個股必漲；股價大跌 ≠ 便宜。優先研究名單仍需確認報價／訂單等產業證據、公司實際受惠、估值與獲利預期。若仍在急跌，應列觀察而非直接買進。")
 
 with tab_search:
     st.subheader("🔎 查詢指定個股")

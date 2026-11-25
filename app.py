@@ -102,6 +102,7 @@ def result_row(r):
         "法人5日(張)":_lots(num(insts.get("5日"))),
         "法人20日(張)":_lots(num(insts.get("20日"))),
         "營收YoY%":num((r.get("revenue") or {}).get("YoY")),
+        "營收MoM%":num((r.get("revenue") or {}).get("MoM")),
         "RSI":round(num(r.get("rsi")),1) if pd.notna(num(r.get("rsi"))) else np.nan,
         "雷達分數":s.get("分數",np.nan),
         "早期趨勢分":s.get("早期趨勢分",np.nan),
@@ -286,12 +287,16 @@ with tab_auto:
                 points = 0
                 evidence, risks = [], []
                 def val(col): return num(row.get(col))
-                rev, inst5, rank60, ma20, ret20, day = (val("營收YoY%"), val("法人5日(張)"), val("60日位階%"), val("位置距MA20%"), val("20日漲幅%"), val("漲跌%"))
+                rev, mom, inst5, rank60, ma20, ret20, day = (val("營收YoY%"), val("營收MoM%"), val("法人5日(張)"), val("60日位階%"), val("位置距MA20%"), val("20日漲幅%"), val("漲跌%"))
                 if pd.notna(rev):
                     if rev >= 20: points += 25; evidence.append("營收年增≥20%")
                     elif rev >= 10: points += 20; evidence.append("營收穩健成長")
                     elif rev > 0: points += 12; evidence.append("營收年增轉正")
                     else: risks.append("營收年增仍為負")
+                if pd.notna(mom):
+                    if mom >= 10: points += 8; evidence.append("營收月增動能明顯")
+                    elif mom > 0: points += 4; evidence.append("營收月增轉正")
+                    elif mom < -10: risks.append("營收月減幅度較大，留意季節性與出貨變化")
                 if pd.notna(inst5):
                     if inst5 > 0: points += 20; evidence.append("法人近5日買超")
                     elif inst5 < 0: risks.append("法人近5日賣超")
@@ -325,8 +330,26 @@ with tab_auto:
             df["提前布局依據"] = scored[1]
             df["進場風險提醒"] = scored[2]
             hard_risk = df["進場風險提醒"].str.contains("漲幅過大|乖離月線|位階偏高|跌勢偏重|遠低於月線", regex=True, na=False)
-            df["進場狀態"] = np.where((df["提前布局分數"] >= 65) & (~hard_risk), "🟢 優先研究", np.where(df["提前布局分數"] >= 45, "🟡 等待更好位置", "⚪ 暫不優先"))
-            df["資料完整度"] = np.where(df[["營收YoY%", "法人5日(張)", "60日位階%", "位置距MA20%", "20日漲幅%"]].notna().sum(axis=1) >= 4, "較完整", "部分缺資料")
+            # 研究分級與實際進場判斷分開，避免「值得研究」被誤認為買進訊號。
+            df["研究分級"] = np.where(df["提前布局分數"] >= 75, "🟢 高優先追蹤", np.where(df["提前布局分數"] >= 60, "🟢 優先研究", np.where(df["提前布局分數"] >= 45, "🟡 觀察研究", "⚪ 暫不優先")))
+            df["進場狀態"] = np.where(df["判斷"].isin(["🟢 買進條件成立", "🔵 突破確認"]), "🟢 可進一步評估進場", np.where(df["判斷"].eq("🟠 不追高"), "🟠 過熱不追", np.where(df["判斷"].eq("🔴 不買"), "🔴 暫不進場", "🟡 等待買點")))
+            def entry_reason(row):
+                reasons=[]
+                risk=str(row.get("進場風險提醒", ""))
+                if "當日漲幅過大" in risk: reasons.append("當日漲幅過大，避免追價")
+                if "當日漲幅偏大" in risk: reasons.append("當日漲幅偏大，等待拉回")
+                if "明顯乖離月線" in risk: reasons.append("股價離月線太遠")
+                if "近20日漲幅過大" in risk: reasons.append("短期漲幅過大")
+                if "60日位階偏高" in risk: reasons.append("位階偏高")
+                if "近20日跌勢偏重" in risk or "近20日跌幅大" in risk: reasons.append("短線仍弱，先確認止跌")
+                if "法人近5日賣超" in risk: reasons.append("法人尚未轉為買超")
+                if "營收年增仍為負" in risk: reasons.append("營收年增尚未轉正")
+                if not reasons and str(row.get("判斷", "")).startswith("🟡"): reasons.append("等待技術訊號與風險報酬條件同步改善")
+                if not reasons and str(row.get("判斷", "")).startswith("🔴"): reasons.append("目前技術／風險條件不符合進場要求")
+                if not reasons and str(row.get("判斷", "")).startswith(("🟢", "🔵")): reasons.append("主要進場條件已觸發，仍須核對停損與部位")
+                return "；".join(reasons) if reasons else "等待更多資料確認"
+            df["進場判斷原因"] = df.apply(entry_reason, axis=1)
+            df["資料完整度"] = np.where(df[["營收YoY%", "營收MoM%", "法人5日(張)", "60日位階%", "位置距MA20%", "20日漲幅%"]].notna().sum(axis=1) >= 5, "較完整", "部分缺資料")
             df = df[df["收盤"].between(price_min, price_max, inclusive="both")].copy()
             if only_bull:
                 df=df[df["判斷"].isin(["🟢 早期佈局","🟢 買進條件成立","🔵 突破確認","🟡 等待"])]
@@ -344,8 +367,12 @@ with tab_auto:
         if "提前布局分數" not in df.columns:
             df["提前布局分數"] = 0
         df["提前布局分數"] = pd.to_numeric(df["提前布局分數"], errors="coerce").fillna(0)
+        if "研究分級" not in df.columns:
+            df["研究分級"] = np.where(df["提前布局分數"] >= 75, "🟢 高優先追蹤", np.where(df["提前布局分數"] >= 60, "🟢 優先研究", np.where(df["提前布局分數"] >= 45, "🟡 觀察研究", "⚪ 暫不優先")))
         if "進場狀態" not in df.columns:
-            df["進場狀態"] = np.where(df["提前布局分數"] >= 65, "🟢 優先研究", np.where(df["提前布局分數"] >= 45, "🟡 等待更好位置", "⚪ 暫不優先"))
+            df["進場狀態"] = np.where(df.get("判斷", pd.Series(index=df.index,dtype=str)).isin(["🟢 買進條件成立", "🔵 突破確認"]), "🟢 可進一步評估進場", "🟡 等待買點")
+        if "進場判斷原因" not in df.columns:
+            df["進場判斷原因"] = "舊版快取資料；請重新掃描以取得進場原因"
         if "進場風險提醒" not in df.columns:
             df["進場風險提醒"] = "舊版快取資料，請重新掃描更新"
         if "資料完整度" not in df.columns:
@@ -368,7 +395,7 @@ with tab_auto:
             df = df.drop(columns=["_entry_order", "_early_num", "_score_num"], errors="ignore").reset_index(drop=True)
             st.session_state["auto_table"] = df
 
-        early_df = df[df.get("進場狀態", pd.Series(index=df.index, dtype=str)).isin(["🟢 優先研究", "🟡 等待更好位置"])].copy() if "進場狀態" in df.columns else pd.DataFrame()
+        early_df = df[df.get("研究分級", pd.Series(index=df.index, dtype=str)).isin(["🟢 高優先追蹤", "🟢 優先研究", "🟡 觀察研究"])].copy() if "研究分級" in df.columns else pd.DataFrame()
         if not early_df.empty and "提前布局分數" in early_df.columns:
             early_df = early_df.sort_values("提前布局分數", ascending=False)
         buy_df = df[df.get("判斷", pd.Series(dtype=str)).isin(["🟢 買進條件成立", "🔵 突破確認"])] if "判斷" in df.columns else pd.DataFrame()
@@ -385,14 +412,22 @@ with tab_auto:
         st.markdown("#### 📌 本次選股結果分布")
         st.dataframe(current_summary, width="stretch", hide_index=True)
         if not early_df.empty:
-            top = early_df.head(10)[[c for c in ["代號","名稱","收盤","提前布局分數","進場狀態","資料完整度","提前布局依據","進場風險提醒","判斷","早期趨勢分","60日位階%","位置距MA20%","20日漲幅%","進場區"] if c in early_df.columns]]
+            top = early_df.head(10)[[c for c in ["代號","名稱","收盤","提前布局分數","研究分級","進場狀態","進場判斷原因","資料完整度","提前布局依據","進場風險提醒","判斷","早期趨勢分","60日位階%","位置距MA20%","20日漲幅%","進場區"] if c in early_df.columns]]
             st.markdown("### 🟢 最值得先看的早期轉強區")
             st.dataframe(top, width="stretch", hide_index=True)
         else:
             st.info("今天沒有股票同時滿足目前的早期轉強門檻；這不代表市場沒有機會，而是目前規則刻意避免把高檔或弱勢股硬列成早期佈局。")
 
+        # 高分追蹤區：即使目前不是買點，也保留在本次追蹤清單，不因「等待／不買」而從研究視野消失。
+        tracked_df = df[pd.to_numeric(df["提前布局分數"], errors="coerce").fillna(0) >= 75].copy()
+        if not tracked_df.empty:
+            tracked_df = tracked_df.sort_values("提前布局分數", ascending=False)
+            st.markdown("### ⭐ 高分持續追蹤名單（布局分數 ≥75）")
+            st.caption("這是研究追蹤名單，不是買進名單。即使目前顯示等待或暫不進場，仍保留高潛力候選股，需在下一次掃描重新確認條件。")
+            st.dataframe(tracked_df[[c for c in ["代號","名稱","收盤","提前布局分數","研究分級","進場狀態","進場判斷原因","提前布局依據","進場風險提醒"] if c in tracked_df.columns]], width="stretch", hide_index=True)
+
         st.markdown("### 📋 自動選股結果")
-        st.caption(f"股價範圍：{price_min}～{price_max} 元。已排除 ETF/ETN；排序以提前布局分數與資料風險為主，舊雷達訊號另列參考。優先研究不等於立即買進。點選股票列可查看完整資料。")
+        st.caption(f"股價範圍：{price_min}～{price_max} 元。已排除 ETF/ETN；研究分級與實際進場狀態分開判斷。高分追蹤不等於買進，請查看進場判斷原因。點選股票列可查看完整資料。")
         event = st.dataframe(
             df,
             width="stretch",

@@ -440,6 +440,7 @@ INDUSTRY_THEMES = {
     "記憶體／儲存": {
         "queries": ["記憶體 DRAM NAND 報價 供需", "HBM 記憶體 供應鏈 台灣"],
         "thesis": "追蹤 DRAM、NAND、HBM 供需、報價與庫存變化；要再確認公司實際產品組合與獲利貢獻。",
+        "watch_items": ["DRAM／NAND 合約與現貨報價方向", "原廠庫存、減產與資本支出", "HBM 產能分配是否排擠一般型記憶體", "模組廠毛利率與庫存評價"],
         "companies": {
             "2408": ("南亞科", "DRAM 記憶體製造"), "2344": ("華邦電", "利基型記憶體／快閃記憶體"),
             "2337": ("旺宏", "非揮發性記憶體"), "8299": ("群聯", "NAND 控制晶片／儲存方案"),
@@ -450,6 +451,7 @@ INDUSTRY_THEMES = {
     "電力／能源設備": {
         "queries": ["台灣 電力設備 變壓器 訂單 供應鏈", "AI 資料中心 用電 電網 儲能"],
         "thesis": "追蹤電網更新、變壓器交期、資料中心用電與儲能投資；要核對訂單能見度、產能與毛利率。",
+        "watch_items": ["台電強韌電網與公用事業資本支出", "變壓器／開關設備交期與報價", "在手訂單、出貨認列與產能擴充", "原物料成本轉嫁與毛利率變化"],
         "companies": {
             "1513": ("中興電", "電力設備／氣體絕緣開關設備"), "1519": ("華城", "變壓器／電力設備"),
             "1503": ("士電", "重電／配電設備"), "1514": ("亞力", "電力工程／配電設備"),
@@ -460,6 +462,7 @@ INDUSTRY_THEMES = {
     "AI 伺服器／散熱": {
         "queries": ["AI 伺服器 台灣 供應鏈 訂單", "AI server 散熱 電源 供應鏈 台灣"],
         "thesis": "追蹤雲端資本支出、伺服器出貨、散熱與電源需求；需確認公司實際客戶、產品占比與估值。",
+        "watch_items": ["主要 CSP 資本支出與 AI 伺服器出貨", "液冷／氣冷滲透率與單機價值量", "電源規格升級與高瓦數產品占比", "客戶集中度、毛利率與資本支出"],
         "companies": {
             "2382": ("廣達", "伺服器／雲端硬體製造"), "2317": ("鴻海", "伺服器／電子製造服務"),
             "6669": ("緯穎", "雲端伺服器"), "3231": ("緯創", "伺服器／資訊硬體"),
@@ -471,6 +474,7 @@ INDUSTRY_THEMES = {
     "半導體／先進封裝": {
         "queries": ["台灣 半導體 先進封裝 擴產 設備 訂單", "CoWoS 先進封裝 供應鏈 台灣"],
         "thesis": "追蹤先進封裝產能、設備與材料需求；新聞題材需由公司公告、營收與資本支出交叉驗證。",
+        "watch_items": ["先進封裝產能／稼動率與擴產進度", "CoWoS 等封裝產能瓶頸與設備交期", "載板／PCB 規格升級與報價", "公司接單、營收認列與折舊壓力"],
         "companies": {
             "2330": ("台積電", "晶圓代工／先進製程與封裝"), "3711": ("日月光投控", "封裝測試"),
             "2449": ("京元電子", "晶圓測試／測試服務"), "6239": ("力成", "封裝測試"),
@@ -498,6 +502,13 @@ def industry_opportunity(row):
         else: score += 2; risks.append("營收年增未轉正")
     else:
         risks.append("營收年增資料不足")
+    # Monthly revenue momentum is a secondary confirmation; a single-month MoM is seasonal/noisy.
+    mom = num(row.get("營收MoM%"))
+    if pd.notna(mom):
+        if mom >= 10:
+            score += 5; evidence.append(f"營收月增 {mom:.1f}%（需留意季節性）")
+        elif mom <= -10:
+            risks.append(f"營收月減 {abs(mom):.1f}%")
     # Institutional flow proxy
     inst5 = num(row.get("法人5日(張)"))
     if pd.notna(inst5):
@@ -576,15 +587,29 @@ with tab_industry:
 
     st.markdown("#### 🔗 台灣供應鏈追蹤名單")
     st.caption("名單是研究起點，不是買進名單。按下分析後才會抓取個股價格、K 線、法人與營收，避免頁面一打開就大量請求資料。")
-    max_names = st.slider("本次分析檔數", min_value=5, max_value=len(theme["companies"]), value=min(8, len(theme["companies"])), key="industry_max_names")
+    st.markdown("#### 🧭 產業景氣觀察清單")
+    for item in theme.get("watch_items", []):
+        st.markdown(f"- {item}")
+    st.caption("目前版本沒有直接串接 DRAM／NAND 報價、變壓器交期、CSP 資本支出或 CoWoS 產能等專業產業資料庫；以下以公開新聞線索、公司營收、法人與股價反應建立交叉檢查，不會把股價上漲誤稱為產業供需已改善。")
+    company_options = list(theme["companies"].keys())
+    selected_codes = st.multiselect(
+        "選擇要比較的供應鏈公司（預設全選）",
+        options=company_options,
+        default=company_options,
+        format_func=lambda code: f"{code}｜{theme['companies'][code][0]}",
+        key=f"industry_codes_{theme_name}"
+    )
     if st.button("🔍 分析此產業供應鏈", type="primary", width="stretch", key="run_industry_scan"):
+        if not selected_codes:
+            st.warning("請至少選擇一家公司。")
+            st.stop()
         with st.spinner("載入最新可取得的台股、法人與營收資料…"):
             stocks_i, inst_i, inst_date_i, rev_i = load_core_data()
         if stocks_i is None or stocks_i.empty:
             st.error("目前抓不到台股清單，請稍後再試。")
         else:
             names_i = dict(zip(stocks_i["代號"].astype(str), stocks_i["名稱"].astype(str)))
-            candidates=list(theme["companies"].items())[:max_names]
+            candidates=[(code, theme["companies"][code]) for code in selected_codes]
             bulk_i=institutional_bulk_summary([code for code,_ in candidates], days=5)
             rows=[]; bar=st.progress(0)
             for i,(code,(fallback_name,role)) in enumerate(candidates):
@@ -594,6 +619,8 @@ with tab_industry:
                         row=result_row(result)
                         row["供應鏈角色"]=role
                         row["營收YoY%"] = num(result.get("revenue",{}).get("YoY"))
+                        row["營收MoM%"] = num(result.get("revenue",{}).get("MoM"))
+                        row["當月營收"] = num(result.get("revenue",{}).get("營收"))
                         row["新聞／題材驗證"]="新聞只作線索；需以公司公告、法說與營收確認實際受惠"
                         opp_score, opp_label, opp_evidence, opp_risks = industry_opportunity(row)
                         row["產業機會分數"] = opp_score
@@ -622,12 +649,22 @@ with tab_industry:
         if "產業機會分數" in result_df.columns:
             best = result_df[result_df["產業機會判斷"].astype(str).str.startswith("🟢")]
             watch = result_df[result_df["產業機會判斷"].astype(str).str.startswith("🟡")]
-            a,b,c = st.columns(3)
+            valid_yoy = pd.to_numeric(result_df.get("營收YoY%", pd.Series(dtype=float)), errors="coerce").dropna()
+            valid_inst = pd.to_numeric(result_df.get("法人5日(張)", pd.Series(dtype=float)), errors="coerce").dropna()
+            valid_ret = pd.to_numeric(result_df.get("20日漲幅%", pd.Series(dtype=float)), errors="coerce").dropna()
+            a,b,c,d,e = st.columns(5)
             a.metric("🟢 優先研究", len(best))
             b.metric("🟡 觀察等待", len(watch))
-            c.metric("分析公司", len(result_df))
+            c.metric("營收年增為正", f"{(valid_yoy.gt(0).mean()*100):.0f}%" if len(valid_yoy) else "資料不足")
+            d.metric("法人近5日買超", f"{(valid_inst.gt(0).mean()*100):.0f}%" if len(valid_inst) else "資料不足")
+            e.metric("20日股價中位數", f"{valid_ret.median():+.1f}%" if len(valid_ret) else "資料不足")
+            st.markdown("#### 🔬 產業內部廣度與公司受惠驗證")
+            st.caption("營收年增為正／法人買超比例是本次所選公司中的占比；20日股價中位數只代表市場反應，不代表產業需求。若股價強但營收或法人沒有同步改善，應視為題材先行、基本面待確認。")
+            yoy_pos = int(valid_yoy.gt(0).sum()) if len(valid_yoy) else 0
+            inst_pos = int(valid_inst.gt(0).sum()) if len(valid_inst) else 0
+            st.write(f"本次 {len(result_df)} 家公司中，營收年增為正 {yoy_pos} 家；法人近 5 日買超 {inst_pos} 家。有效資料筆數分別為營收 {len(valid_yoy)} 家、法人 {len(valid_inst)} 家、股價報酬 {len(valid_ret)} 家。")
             st.caption("產業機會分數是透明的初篩排序，使用營收年增、法人近5日、股價位階、20日變化、距MA20及風險報酬等可取得資料；不是預測報酬，也不能證明產業供需缺口。缺少資料會降低可信度。")
-        show_cols=[c for c in ["代號","名稱","供應鏈角色","產業機會分數","產業機會判斷","支持證據","主要風險","資料完整度","收盤","漲跌%","營收YoY%","法人買賣超(張)","法人5日(張)","早期趨勢分","60日位階%","20日漲幅%","判斷","動作","進場區","停損","目標1","目標2","新聞／題材驗證","資料狀態"] if c in result_df.columns]
+        show_cols=[c for c in ["代號","名稱","供應鏈角色","產業機會分數","產業機會判斷","支持證據","主要風險","資料完整度","收盤","漲跌%","營收YoY%","營收MoM%","當月營收","法人買賣超(張)","法人5日(張)","法人20日(張)","早期趨勢分","60日位階%","20日漲幅%","位置距MA20%","判斷","動作","進場區","停損","目標1","目標2","新聞／題材驗證","資料狀態"] if c in result_df.columns]
         st.dataframe(result_df[show_cols], width="stretch", hide_index=True)
         st.caption("判讀原則：產業前景好 ≠ 個股必漲；股價大跌 ≠ 便宜。優先研究名單仍需確認報價／訂單等產業證據、公司實際受惠、估值與獲利預期。若仍在急跌，應列觀察而非直接買進。")
 

@@ -340,6 +340,16 @@ with tab_auto:
         else: st.error("沒有取得足夠資料，請稍後再試。")
     if "auto_table" in st.session_state:
         df=st.session_state["auto_table"].copy()
+        # 相容舊版 session_state：新版部署後，Streamlit 可能仍保留舊表格，先補齊欄位避免 KeyError。
+        if "提前布局分數" not in df.columns:
+            df["提前布局分數"] = 0
+        df["提前布局分數"] = pd.to_numeric(df["提前布局分數"], errors="coerce").fillna(0)
+        if "進場狀態" not in df.columns:
+            df["進場狀態"] = np.where(df["提前布局分數"] >= 65, "🟢 優先研究", np.where(df["提前布局分數"] >= 45, "🟡 等待更好位置", "⚪ 暫不優先"))
+        if "進場風險提醒" not in df.columns:
+            df["進場風險提醒"] = "舊版快取資料，請重新掃描更新"
+        if "資料完整度" not in df.columns:
+            df["資料完整度"] = "舊版快取資料"
         # 固定訊號優先順序：先找早期轉強，再看確認型訊號，最後才是不追高/不買。
         # 同一訊號內優先早期趨勢分，再依雷達分數，讓手機上第一眼就看到「還沒噴」的標的。
         signal_order = {

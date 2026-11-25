@@ -55,3 +55,11 @@ Main file: `app.py`
 - Themes include memory/storage, power/energy equipment, AI servers/cooling, and semiconductor/advanced packaging.
 - Recent news is fetched only when the user presses the news refresh button; headlines are discovery leads, not proof of company exposure.
 - Supply-chain mappings are an initial research list. Use the in-app price/K-line, revenue and institutional data to cross-check; no theme or score is a guaranteed buy signal.
+
+
+## V4.7 提前布局排序修正
+- 自動選股候選池排除 ETF/ETN，避免基金混入個股基本面排名。
+- 提前布局分數採基本面、法人近 5 日方向、60 日位階、月線乖離與短期漲幅風險綜合評分。
+- 排序改以提前布局分數及進場風險分級為主，原雷達訊號保留為輔助資訊。
+- 早期轉強區改依提前布局研究分級列出，不再只依賴舊版「早期佈局」訊號。
+- 「優先研究」不等於買進訊號；資料不足會標示完整度。
